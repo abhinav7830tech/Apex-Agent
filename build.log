@@ -1,0 +1,113 @@
+
+> apex-agents@0.1.0 build
+> next build
+
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of C:\Users\ACER\package-lock.json as the root directory.
+ To silence this warning, set `outputFileTracingRoot` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#caveats for more information.
+ Detected additional lockfiles: 
+   * C:\Users\ACER\OneDrive\Desktop\apex-agents\package-lock.json
+
+   ▲ Next.js 15.5.10
+   - Environments: .env
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 10.7s
+   Linting and checking validity of types ...
+
+./src/app/(dashboard)/meetings/[meetingId]/page.tsx
+1:10  Warning: 'notFound' is defined but never used.  @typescript-eslint/no-unused-vars
+2:10  Warning: 'Skeleton' is defined but never used.  @typescript-eslint/no-unused-vars
+6:40  Warning: 'QueryClient' is defined but never used.  @typescript-eslint/no-unused-vars
+6:53  Warning: 'QueryClientProvider' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/app/call/layout.tsx
+2:10  Warning: 'SidebarProvider' is defined but never used.  @typescript-eslint/no-unused-vars
+3:10  Warning: 'DashboardSidebar' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/app/call/[meetingId]/page.tsx
+1:10  Warning: 'session' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/app/upgrade/page.tsx
+14:10  Warning: 'useRouter' is defined but never used.  @typescript-eslint/no-unused-vars
+15:10  Warning: 'toast' is defined but never used.  @typescript-eslint/no-unused-vars
+17:10  Warning: 'cn' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/components/generated-avatar.tsx
+36:17  Warning: Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+./src/components/ui/command.tsx
+15:10  Warning: 'boolean' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/agents/server/procedures.ts
+43:29  Warning: 'input' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/agents/ui/components/columns.tsx
+3:8  Warning: 'humanizeDuration' is defined but never used.  @typescript-eslint/no-unused-vars
+5:10  Warning: 'AgentGetOne' is defined but never used.  @typescript-eslint/no-unused-vars
+8:65  Warning: 'CornerDownRightIcon' is defined but never used.  @typescript-eslint/no-unused-vars
+8:113  Warning: 'VideoIcon' is defined but never used.  @typescript-eslint/no-unused-vars
+20:10  Warning: 'formatDuration' is defined but never used.  @typescript-eslint/no-unused-vars
+84:6  Warning: 'MeetingStatus' is defined but never used.  @typescript-eslint/no-unused-vars
+116:33  Warning: 'color' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+116:40  Warning: 'label' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/auth/ui/views/sign-in-view.tsx
+82:9  Warning: 'handleSocialLogin' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/auth/ui/views/sign-up-view.tsx
+93:9  Warning: 'handleSocialLogin' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/call/ui/components/call-connect.tsx
+16:10  Warning: 'set' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/call/ui/components/call-ended.tsx
+1:10  Warning: 'LogInIcon' is defined but never used.  @typescript-eslint/no-unused-vars
+4:3  Warning: 'DefaultVideoPlaceholder' is defined but never used.  @typescript-eslint/no-unused-vars
+5:3  Warning: 'StreamVideoParticipant' is defined but never used.  @typescript-eslint/no-unused-vars
+6:3  Warning: 'ToggleAudioPreviewButton' is defined but never used.  @typescript-eslint/no-unused-vars
+7:3  Warning: 'ToggleVideoPreviewButton' is defined but never used.  @typescript-eslint/no-unused-vars
+9:3  Warning: 'VideoPreview' is defined but never used.  @typescript-eslint/no-unused-vars
+12:10  Warning: 'authClient' is defined but never used.  @typescript-eslint/no-unused-vars
+14:10  Warning: 'GeneratedAvatarUri' is defined but never used.  @typescript-eslint/no-unused-vars
+24:9  Warning: 'hasBrowserMediaPermission' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/meetings/ui/components/agent-id-filter.tsx
+7:10  Warning: 'id' is defined but never used.  @typescript-eslint/no-unused-vars
+8:10  Warning: 'Value' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/meetings/ui/components/completed-state.tsx
+197:26  Warning: 'e' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/meetings/ui/components/status-filter.tsx
+12:10  Warning: 'Children' is defined but never used.  @typescript-eslint/no-unused-vars
+13:10  Warning: 'meetingStatus' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./src/modules/meetings/ui/views/meetings-view.tsx
+5:10  Warning: 'Button' is defined but never used.  @typescript-eslint/no-unused-vars
+6:10  Warning: 'DataTable' is defined but never used.  @typescript-eslint/no-unused-vars
+9:10  Warning: 'ColumnDef' is defined but never used.  @typescript-eslint/no-unused-vars
+10:10  Warning: 'Plus' is defined but never used.  @typescript-eslint/no-unused-vars
+11:8  Warning: 'Link' is defined but never used.  @typescript-eslint/no-unused-vars
+16:15  Warning: 'MeetingGetMany' is defined but never used.  @typescript-eslint/no-unused-vars
+100:7  Warning: 'useMeetings' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+106:9  Warning: 'router' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+108:18  Warning: 'setFilter' is assigned a value but never used.  @typescript-eslint/no-unused-vars
+
+info  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/app/api-reference/config/eslint#disabling-rules
+Failed to compile.
+
+.next/types/app/(dashboard)/meetings/[meetingId]/page.ts:34:29
+Type error: Type 'Props' does not satisfy the constraint 'PageProps'.
+  Types of property 'params' are incompatible.
+    Type '{ meetingId: string; }' is missing the following properties from type 'Promise<any>': then, catch, finally, [Symbol.toStringTag]
+
+[0m [90m 32 |[39m
+ [90m 33 |[39m [90m// Check the prop type of the entry function[39m
+[31m[1m>[22m[39m[90m 34 |[39m checkFields[33m<[39m[33mDiff[39m[33m<[39m[33mPageProps[39m[33m,[39m [33mFirstArg[39m[33m<[39m[33mTEntry[39m[[32m'default'[39m][33m>[39m[33m,[39m [32m'default'[39m[33m>>[39m()
+ [90m    |[39m                             [31m[1m^[22m[39m
+ [90m 35 |[39m
+ [90m 36 |[39m [90m// Check the arguments and return type of the generateMetadata function[39m
+ [90m 37 |[39m [36mif[39m ([32m'generateMetadata'[39m [36min[39m entry) {[0m
+Next.js build worker exited with code: 1 and signal: null
