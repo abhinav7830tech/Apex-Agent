@@ -43,6 +43,7 @@ Apex Agent is a modern SaaS platform that combines AI-powered meeting management
 
 ## Features
 
+
 - **AI Agent Management** — Create, configure, and deploy AI agents for automated workflows
 - **Meeting Management** — Schedule, join, and manage video meetings with real-time AI assistance
 - **Smart Search** — AI-powered search across meetings and agents
