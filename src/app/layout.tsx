@@ -20,6 +20,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Apex Agent",
   description: "Your intelligent agent for seamless automation and productivity",
+  icons: {
+    icon: "/logo.svg",
+  },
 };
 
 export default async function RootLayout({
