@@ -13,7 +13,12 @@ const Page=async()=> {
       redirect("/")
     }
   return (
-    <SignInView/>
+    <>
+      <style>{`
+        .fixed.top-4.right-4.z-50 { display: none !important; }
+      `}</style>
+      <SignInView/>
+    </>
   )
 }
 

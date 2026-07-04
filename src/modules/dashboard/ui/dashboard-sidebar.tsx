@@ -1,6 +1,6 @@
 "use client";
 import { cn } from "@/lib/utils";
-import { BotIcon, StarIcon, VideoIcon, HomeIcon } from "lucide-react";
+import { BotIcon, StarIcon, VideoIcon, HomeIcon, ArrowUpCircleIcon } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -14,6 +14,7 @@ const firstSection = [
 
 const secondSection = [
   { icon: StarIcon, label: "About Developers", href: "/about-developers" },
+  { icon: ArrowUpCircleIcon, label: "Upgrade", href: "/upgrade" },
 ];
 
 export const DashboardSidebar = () => {
