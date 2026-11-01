@@ -36,7 +36,7 @@ export function HomeView() {
     );
   }
 
-   const userName = session?.user?.name || "Prasoon";
+  const userName = session?.user?.name || "there";
   const displayedAgentsCount = agentsCount || 0;
 
   const formatDuration = (seconds: number) => {

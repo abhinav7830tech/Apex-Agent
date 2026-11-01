@@ -43,21 +43,24 @@ export const AgentIdView = ({ agentId }: Props) => {
   );
 
   const [RemoveConfirmation, confirmRemove] = useConfirm(
-    "Are You Sure?",
-    `The following action will remove ${data.meetingCount} associated meeting${data.meetingCount !== 1 ? 's' : ''}`,
+    "Remove this agent?",
+    data.meetingCount > 0
+      ? `This agent is attached to ${data.meetingCount} meeting${
+          data.meetingCount === 1 ? "" : "s"
+        }. Delete or reassign those meetings before removing the agent.`
+      : "This permanently removes the agent. This action cannot be undone.",
     "Remove",
-    "Cancel"
+    "Cancel",
   );
 
   const handleRemoveAgent = async () => {
     const ok = await confirmRemove();
-    if (ok) {
-      try {
-        await removeAgent.mutateAsync({ id: agentId });
-      } catch (error) {
-        console.log(error);
-        
-      }
+    if (!ok) return;
+
+    try {
+      await removeAgent.mutateAsync({ id: agentId });
+    } catch {
+      // The mutation's onError already surfaces the message.
     }
   };
 
@@ -82,20 +85,39 @@ export const AgentIdView = ({ agentId }: Props) => {
           <div className="px-4 py-5 gap-y-5 flex flex-col">
             <div className="flex items-center gap-x-3">
               <GeneratedAvatar
-                variant="botttsNeutral"
+                variant={
+                  data.avatarVariant === "initials"
+                    ? "initials"
+                    : "botttsNeutral"
+                }
                 seed={data.name}
                 className="size-10"
               />
-              <h1 className="text-2xl font-medium">{data.name}</h1>
+              <div>
+                <h1 className="text-2xl font-medium">{data.name}</h1>
+                {data.role && (
+                  <p className="text-sm text-muted-foreground">{data.role}</p>
+                )}
+              </div>
             </div>
             <Badge variant="outline" className="flex items-center gap-x-2 w-fit">
               <VideoIcon className="size-4" />
               {data.meetingCount}{" "}
               {data.meetingCount === 1 ? "meeting" : "meetings"}
             </Badge>
+            {data.description && (
+              <div className="flex flex-col gap-y-2">
+                <p className="text-lg font-medium">Description</p>
+                <p className="text-neutral-800 whitespace-pre-wrap">
+                  {data.description}
+                </p>
+              </div>
+            )}
             <div className="flex flex-col gap-y-4">
               <p className="text-lg font-medium">Instructions</p>
-              <p className="text-neutral-800">{data.instructions}</p>
+              <p className="text-neutral-800 whitespace-pre-wrap">
+                {data.instructions}
+              </p>
             </div>
           </div>
         </div>

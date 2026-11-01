@@ -20,6 +20,7 @@ interface Props {
   meetingName: string;
   onEdit: () => void;
   onRemove: () => void;
+  canEdit?: boolean;
 }
 
 export const MeetingIdViewHeader = ({
@@ -27,6 +28,7 @@ export const MeetingIdViewHeader = ({
   meetingName,
   onEdit,
   onRemove,
+  canEdit = true,
 }: Props) => {
   return (
     <div className="flex items-center justify-between">
@@ -54,10 +56,12 @@ export const MeetingIdViewHeader = ({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={onEdit}>
-            <PencilIcon />
-            Edit
-          </DropdownMenuItem>
+          {canEdit && (
+            <DropdownMenuItem onClick={onEdit}>
+              <PencilIcon />
+              Edit
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={onRemove}>
             <TrashIcon className="size-4 text-black"/>
             Delete

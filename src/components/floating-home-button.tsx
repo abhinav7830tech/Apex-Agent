@@ -7,7 +7,15 @@ import { usePathname } from "next/navigation";
 export function FloatingHomeButton() {
   const pathname = usePathname();
 
-  if (pathname === "/") return null;
+  // The call and guest-join screens are full-screen video UIs with their own
+  // top-right controls, so the floating shortcut would cover them.
+  if (
+    pathname === "/" ||
+    pathname.startsWith("/call/") ||
+    pathname.startsWith("/join/")
+  ) {
+    return null;
+  }
 
   return (
     <Link

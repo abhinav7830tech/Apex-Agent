@@ -52,7 +52,7 @@ export const AgentForm = ({
     })
   );
   
-    const UpdateAgent = useMutation(
+  const UpdateAgent = useMutation(
     trpc.agents.update.mutationOptions({
       onSuccess: async() => {
         await queryClient.invalidateQueries(
@@ -64,7 +64,7 @@ export const AgentForm = ({
           ); 
         }
         onSuccess?.(); // Call success callback
-        toast.success("Agent created successfully!");
+        toast.success("Agent updated successfully!");
       },
       onError: (error) => {
         toast.error(error.message);
@@ -76,6 +76,9 @@ export const AgentForm = ({
     defaultValues: {
       name: initialValues?.name ?? "",
       instructions: initialValues?.instructions ?? "",
+      description: initialValues?.description ?? "",
+      role: initialValues?.role ?? "Meeting Assistant",
+      avatarVariant: initialValues?.avatarVariant ?? "botttsNeutral",
     },
   });
 
@@ -95,7 +98,11 @@ export const AgentForm = ({
       <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)}>
         <GeneratedAvatar
           seed={form.watch("name") || "default"}
-          variant="botttsNeutral"
+          variant={
+            form.watch("avatarVariant") === "initials"
+              ? "initials"
+              : "botttsNeutral"
+          }
           className="border size-16"
         />
         
@@ -114,15 +121,84 @@ export const AgentForm = ({
         />
         
         <FormField
+          name="role"
+          control={form.control}
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Role</FormLabel>
+              <FormControl>
+                <Input
+                  {...field}
+                  value={field.value ?? ""}
+                  placeholder="Product meeting assistant"
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          name="description"
+          control={form.control}
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Description</FormLabel>
+              <FormControl>
+                <Textarea
+                  {...field}
+                  value={field.value ?? ""}
+                  placeholder="What this agent specializes in"
+                  rows={2}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          name="avatarVariant"
+          control={form.control}
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Avatar style</FormLabel>
+              <div className="flex gap-2">
+                {[
+                  { value: "botttsNeutral", label: "Robot" },
+                  { value: "initials", label: "Initials" },
+                ].map((option) => (
+                  <Button
+                    key={option.value}
+                    type="button"
+                    size="sm"
+                    variant={
+                      (field.value ?? "botttsNeutral") === option.value
+                        ? "default"
+                        : "outline"
+                    }
+                    onClick={() => field.onChange(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </div>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
           name="instructions"
           control={form.control}
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Instructions</FormLabel> {/* Fixed capitalization */}
+              <FormLabel>Instructions</FormLabel>
               <FormControl>
                 <Textarea
                   {...field}
-                  placeholder="You are an assistant that helps me play good Valorant"
+                  placeholder="You are a helpful meeting assistant. Keep answers concise and accurate."
+                  rows={6}
                 />
               </FormControl>
               <FormMessage />

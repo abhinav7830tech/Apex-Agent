@@ -1,36 +1,55 @@
 "use client";
-import { useTRPC } from "@/trpc/client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-import { meetingsInsertSchema } from "../../schemas";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { toast } from "sonner";
+
+import { useTRPC } from "@/trpc/client";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
   FormMessage,
-  FormDescription
 } from "@/components/ui/form";
-
 import { Input } from "@/components/ui/input";
-
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
-import { MeetingGetOne } from "../../types";
-import { useState } from "react";
 import { CommandSelect } from "@/components/command-select";
 import { GeneratedAvatar } from "@/components/generated-avatar";
 import { NewAgentDialog } from "@/modules/agents/ui/components/new-agent-dialog";
+import { meetingsInsertSchema } from "../../schemas";
+import { MeetingGetOne } from "../../types";
+import {
+  toDatetimeLocalValue,
+  toZonedDatetimeLocalValue,
+  zonedDateTimeToUtc,
+} from "../../utils";
 
 interface MeetingFormProps {
   onSuccess?: (id?: string) => void;
-  onCancel?: () => void; // Fixed typo: onCancle -> onCancel
-  initialValues?: MeetingGetOne; // Fixed: removed () => function wrapper
+  onCancel?: () => void;
+  initialValues?: MeetingGetOne;
 }
+
+const getDefaultScheduledAt = () => {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setMinutes(0, 0, 0);
+  return toDatetimeLocalValue(date);
+};
+
+const getBrowserTimezone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+};
 
 export const MeetingForm = ({
   onSuccess,
@@ -40,9 +59,13 @@ export const MeetingForm = ({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
 
-
   const [openNewDialog, setOpenNewDialog] = useState(false);
-  const [agentSearch, setAgentSearch] = useState("")
+  const [agentSearch, setAgentSearch] = useState("");
+  const [participantsInput, setParticipantsInput] = useState(
+    initialValues?.participants?.join(", ") ?? "",
+  );
+
+  const timezone = initialValues?.timezone ?? getBrowserTimezone();
 
   const agents = useQuery(
     trpc.agents.getMany.queryOptions({
@@ -51,57 +74,92 @@ export const MeetingForm = ({
     }),
   );
 
+  const invalidateMeetings = async (meetingId?: string) => {
+    await queryClient.invalidateQueries({
+      queryKey: trpc.meetings.getMany.queryKey({}),
+    });
+    if (meetingId) {
+      await queryClient.invalidateQueries({
+        queryKey: trpc.meetings.getOne.queryKey({ id: meetingId }),
+      });
+    }
+  };
+
   const createMeeting = useMutation(
     trpc.meetings.create.mutationOptions({
       onSuccess: async (data) => {
-        await queryClient.invalidateQueries(
-          trpc.meetings.getMany.queryOptions({})
-        );
-
-        onSuccess?.(data.id); // Call success callback
-        toast.success("Agent created successfully!");
+        await invalidateMeetings(data.id);
+        onSuccess?.(data.id);
+        toast.success("Meeting scheduled successfully.");
       },
       onError: (error) => {
         toast.error(error.message);
       },
-    })
+    }),
   );
 
-  const UpdateMeeting = useMutation(
+  const updateMeeting = useMutation(
     trpc.meetings.update.mutationOptions({
-      onSuccess: async () => {
-        await queryClient.invalidateQueries(
-          trpc.meetings.getMany.queryOptions({})
-        );
-        if (initialValues?.id) {
-          await queryClient.invalidateQueries(
-            trpc.agents.getOne.queryOptions({ id: initialValues.id })
-          );
-        }
-        onSuccess?.(); // Call success callback
-        toast.success("Agent created successfully!");
+      onSuccess: async (data) => {
+        await invalidateMeetings(data.id);
+        onSuccess?.(data.id);
+        toast.success("Meeting updated successfully.");
       },
       onError: (error) => {
         toast.error(error.message);
       },
-    })
+    }),
   );
-  const form = useForm<z.infer<typeof meetingsInsertSchema>>({
+
+  const form = useForm<
+    z.input<typeof meetingsInsertSchema>,
+    unknown,
+    z.infer<typeof meetingsInsertSchema>
+  >({
     resolver: zodResolver(meetingsInsertSchema),
     defaultValues: {
       name: initialValues?.name ?? "",
+      description: initialValues?.description ?? "",
       agentId: initialValues?.agentId ?? "",
+      scheduledAt: initialValues?.scheduledAt
+        ? toZonedDatetimeLocalValue(initialValues.scheduledAt, timezone)
+        : getDefaultScheduledAt(),
+      durationMinutes: initialValues?.durationMinutes ?? 30,
+      timezone,
+      participants: initialValues?.participants ?? [],
+      visibility: initialValues?.visibility === "public" ? "public" : "private",
     },
   });
 
   const isEdit = !!initialValues?.id;
-  const isPending = createMeeting.isPending || UpdateMeeting.isPending;
+  const isPending = createMeeting.isPending || updateMeeting.isPending;
 
   const onSubmit = (values: z.infer<typeof meetingsInsertSchema>) => {
+    const scheduledAt = zonedDateTimeToUtc(values.scheduledAt, values.timezone);
+
+    if (!scheduledAt) {
+      form.setError("scheduledAt", {
+        message: "Enter a valid meeting date and time.",
+      });
+      return;
+    }
+
+    const participants = participantsInput
+      .split(",")
+      .map((participant) => participant.trim())
+      .filter(Boolean);
+
+    const payload = {
+      ...values,
+      description: values.description?.trim() ? values.description.trim() : null,
+      scheduledAt: scheduledAt.toISOString(),
+      participants,
+    };
+
     if (isEdit) {
-      UpdateMeeting.mutate({ ...values, id: initialValues.id });
+      updateMeeting.mutate({ ...payload, id: initialValues.id });
     } else {
-      createMeeting.mutate(values);
+      createMeeting.mutate(payload);
     }
   };
 
@@ -115,28 +173,37 @@ export const MeetingForm = ({
             control={form.control}
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Name</FormLabel>
+                <FormLabel>Meeting title</FormLabel>
                 <FormControl>
-                  <Input {...field} placeholder="Neon" />
+                  <Input {...field} placeholder="Weekly product sync" />
                 </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
+
           <FormField
             name="agentId"
             control={form.control}
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Agent</FormLabel>
+                <FormLabel>AI agent</FormLabel>
                 <FormControl>
                   <CommandSelect
-                    options={agents.data?.items?.map(agent => ({
-                      id: agent.id,
-                      value: agent.id,
-                      label: agent.name,
-                      logo: <GeneratedAvatar seed={agent.name} variant="botttsNeutral" className="h-4 w-4" />
-                    })) || []}
+                    options={
+                      agents.data?.items?.map((agent) => ({
+                        id: agent.id,
+                        value: agent.id,
+                        label: agent.name,
+                        logo: (
+                          <GeneratedAvatar
+                            seed={agent.name}
+                            variant="botttsNeutral"
+                            className="h-4 w-4"
+                          />
+                        ),
+                      })) || []
+                    }
                     value={field.value}
                     onSelect={field.onChange}
                     onSearch={setAgentSearch}
@@ -144,7 +211,7 @@ export const MeetingForm = ({
                   />
                 </FormControl>
                 <FormDescription className="flex items-center gap-2">
-                  Can&apos;t find your agent?{' '}
+                  Can&apos;t find your agent?{" "}
                   <Button
                     type="button"
                     variant="link"
@@ -159,6 +226,95 @@ export const MeetingForm = ({
             )}
           />
 
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField
+              name="scheduledAt"
+              control={form.control}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Date and time</FormLabel>
+                  <FormControl>
+                    <Input type="datetime-local" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              name="durationMinutes"
+              control={form.control}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Duration (minutes)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={5}
+                      max={480}
+                      step={5}
+                      {...field}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            name="timezone"
+            control={form.control}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Timezone</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="America/New_York" />
+                </FormControl>
+                <FormDescription>
+                  Use an IANA timezone such as America/New_York or Asia/Kolkata.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormItem>
+            <FormLabel>Participants</FormLabel>
+            <FormControl>
+              <Input
+                value={participantsInput}
+                onChange={(event) => setParticipantsInput(event.target.value)}
+                placeholder="alex@example.com, sam@example.com"
+              />
+            </FormControl>
+            <FormDescription>
+              Separate participants with commas. This is optional.
+            </FormDescription>
+          </FormItem>
+
+          <FormField
+            name="description"
+            control={form.control}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Agenda / description</FormLabel>
+                <FormControl>
+                  <Textarea
+                    {...field}
+                    value={field.value ?? ""}
+                    rows={3}
+                    placeholder="What should this meeting cover?"
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
           <div className="flex justify-between gap-x-2">
             {onCancel && (
               <Button
@@ -167,11 +323,11 @@ export const MeetingForm = ({
                 type="button"
                 onClick={() => onCancel()}
               >
-                Cancel {/* Fixed typo: Cancle -> Cancel */}
+                Cancel
               </Button>
             )}
             <Button disabled={isPending} type="submit">
-              {isEdit ? "Update" : "Create"}
+              {isEdit ? "Save changes" : "Schedule meeting"}
             </Button>
           </div>
         </form>

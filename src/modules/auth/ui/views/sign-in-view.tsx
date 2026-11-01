@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 
 const formSchema = z.object({
@@ -39,6 +39,12 @@ type FormData = z.infer<typeof formSchema>;
 
 export const SignInView = () => {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTo = searchParams.get("redirectTo");
+  const safeRedirect =
+    redirectTo && redirectTo.startsWith("/") && !redirectTo.startsWith("//")
+      ? redirectTo
+      : "/";
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -63,7 +69,7 @@ export const SignInView = () => {
         },
         {
           onSuccess: () => {
-            router.push("/");
+            router.push(safeRedirect);
           },
           onError: ({ error }) => {
             setError(error.message || "An error occurred during sign in");
@@ -220,6 +226,7 @@ export const SignInView = () => {
                       onClick={() => {
                         authClient.signIn.social({
                           provider: "google",
+                          callbackURL: safeRedirect,
                         });
                       }}
                       className="h-[48px] bg-white border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300 rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -234,6 +241,7 @@ export const SignInView = () => {
                       onClick={() => {
                         authClient.signIn.social({
                           provider: "github",
+                          callbackURL: safeRedirect,
                         });
                       }}
                       className="h-[48px] bg-white border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300 rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -250,7 +258,11 @@ export const SignInView = () => {
                       Don&apos;t have an account?{" "}
                     </span>
                     <Link
-                      href="/sign-up"
+                      href={
+                        redirectTo
+                          ? `/sign-up?redirectTo=${encodeURIComponent(redirectTo)}`
+                          : "/sign-up"
+                      }
                       className="text-green-600 font-semibold hover:text-green-700 transition-colors underline underline-offset-4"
                     >
                       Sign up

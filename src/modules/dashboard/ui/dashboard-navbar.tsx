@@ -67,6 +67,8 @@ export const DashboardNavbar = () => {
       case "meeting_started": return "🎥";
       case "meeting_ended": return "✅";
       case "meeting_cancelled": return "❌";
+      case "meeting_updated": return "✏️";
+      case "meeting_failed": return "⚠️";
       case "summary_ready": return "📝";
       default: return "📢";
     }
@@ -165,7 +167,9 @@ export const DashboardNavbar = () => {
                               <p className="text-sm font-semibold text-[#1a3d2e] truncate group-hover:text-green-700 transition-colors">{meeting.name}</p>
                               <p className="text-xs text-[#7a9a8a] flex items-center gap-1">
                                 <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
-                                {meeting.status}
+                                {meeting.scheduledAt
+                                  ? formatDistanceToNow(new Date(meeting.scheduledAt), { addSuffix: true })
+                                  : meeting.status}
                               </p>
                             </div>
                             <ChevronRightIcon className="h-4 w-4 text-[#b8e8ce] group-hover:text-green-500 transition-colors" />

@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { notifications, meetings } from "@/db/schema";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
-import { and, desc, eq, count, gt, lt, or } from "drizzle-orm";
+import { and, desc, eq, count, or } from "drizzle-orm";
 import { z } from "zod";
 
 export const notificationsRouter = createTRPCRouter({
@@ -95,6 +95,7 @@ export const notificationsRouter = createTRPCRouter({
           summary: meetings.summary,
           startedAt: meetings.startedAt,
           endedAt: meetings.endedAt,
+          scheduledAt: meetings.scheduledAt,
           createdAt: meetings.createdAt,
         })
         .from(meetings)
@@ -103,7 +104,8 @@ export const notificationsRouter = createTRPCRouter({
             eq(meetings.userId, ctx.auth.user.id),
             or(
               eq(meetings.status, "completed"),
-              eq(meetings.status, "processing")
+              eq(meetings.status, "processing"),
+              eq(meetings.status, "failed")
             )
           )
         )
@@ -127,6 +129,7 @@ export const notificationsRouter = createTRPCRouter({
           id: meetings.id,
           name: meetings.name,
           status: meetings.status,
+          scheduledAt: meetings.scheduledAt,
           startedAt: meetings.startedAt,
           createdAt: meetings.createdAt,
         })
@@ -135,12 +138,13 @@ export const notificationsRouter = createTRPCRouter({
           and(
             eq(meetings.userId, ctx.auth.user.id),
             or(
+              eq(meetings.status, "scheduled"),
               eq(meetings.status, "upcoming"),
               eq(meetings.status, "active")
             )
           )
         )
-        .orderBy(meetings.createdAt)
+        .orderBy(meetings.scheduledAt, meetings.createdAt)
         .limit(limit);
 
       return upcomingMeetings;

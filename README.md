@@ -45,12 +45,19 @@ Apex Agent is a modern SaaS platform that combines AI-powered meeting management
 
 
 - **AI Agent Management** — Create, configure, and deploy AI agents for automated workflows
-- **Meeting Management** — Schedule, join, and manage video meetings with real-time AI assistance
-- **Smart Search** — AI-powered search across meetings and agents
-- **Analytics Dashboard** — Track meeting stats, talk time, and agent performance
-- **Notifications** — Real-time notifications for meetings, summaries, and updates
+- **Meeting Scheduling** — Timezone-aware scheduling with duration, participants, overlap detection, and cancel/reschedule
+- **Meeting Management** — Join, end for all, retry analysis, and review processing/failed states
+- **AI Summaries** — Stream transcription processed asynchronously by Inngest and OpenAI into summaries, decisions, action items, and highlights
+- **Ask AI** — Ask questions across your analyzed meeting history with source links
+- **Calendar** — Month view of scheduled meetings
+- **Smart Search** — Searchable command palette across meetings, agents, and pages
+- **Analytics Dashboard** — Track meeting stats, talk time, status breakdown, and activity
+- **Notifications** — In-app notifications for scheduling, updates, summaries, and failures
+- **Transcript & PDF Export** — Download meeting summaries and transcripts
 - **Authentication** — Email/password + Google & GitHub social login
 - **Responsive Design** — Optimized for desktop, tablet, and mobile
+
+See `PROJECT_AUDIT.md` and `IMPLEMENTATION_REPORT.md` for the audit findings and implementation details.
 
 ---
 
@@ -67,30 +74,16 @@ Apex Agent is a modern SaaS platform that combines AI-powered meeting management
 
 ### Environment Variables
 
-Create a `.env` file in the root directory:
+Copy `.env.example` to `.env` and fill in the values:
 
-```env
-# Database
-DATABASE_URL=
-
-# Auth
-BETTER_AUTH_SECRET=
-BETTER_AUTH_URL=
-
-# Stream Video
-NEXT_PUBLIC_STREAM_VIDEO_API_KEY=
-STREAM_VIDEO_SECRET_KEY=
-
-# Inngest
-INNGEST_SIGNING_KEY=
-INNGEST_EVENT_KEY=
-
-# OpenAI
-OPENAI_API_KEY=
-
-# App
-NEXT_PUBLIC_APP_URL=http://localhost:3000
+```bash
+cp .env.example .env
 ```
+
+The example file documents every variable used by the app. At minimum, set
+`DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
+`NEXT_PUBLIC_APP_URL`, the Stream Video keys, `OPENAI_API_KEY`, and the
+Inngest keys. OAuth and Stripe are optional.
 
 ### Installation
 
@@ -98,12 +91,15 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 # Install dependencies
 npm install
 
-# Push database schema
-npm run db:push
+# Apply database migrations
+npm run db:migrate
 
 # Start development server
 npm run dev
 ```
+
+Use `npm run dev:webhook` in a separate terminal to expose the Stream webhook
+during local development.
 
 Open [http://localhost:3000](http://localhost:3000) to see the application.
 
@@ -115,8 +111,11 @@ Open [http://localhost:3000](http://localhost:3000) to see the application.
 | `npm run build` | Production build |
 | `npm run start` | Start production server |
 | `npm run lint` | Run ESLint |
-| `npm run db:push` | Push Drizzle schema to database |
+| `npm run db:push` | Push Drizzle schema to database (prototyping only) |
+| `npm run db:generate` | Generate a new Drizzle migration |
+| `npm run db:migrate` | Apply pending Drizzle migrations |
 | `npm run db:studio` | Open Drizzle Studio |
+| `npm run dev:webhook` | Expose the Stream webhook with ngrok |
 
 ---
 

@@ -1,6 +1,16 @@
 "use client";
 import { cn } from "@/lib/utils";
-import { BotIcon, StarIcon, VideoIcon, HomeIcon, ArrowUpCircleIcon } from "lucide-react";
+import {
+  ArrowUpCircleIcon,
+  BarChart3Icon,
+  BellIcon,
+  BotIcon,
+  CalendarIcon,
+  HomeIcon,
+  SparklesIcon,
+  StarIcon,
+  VideoIcon,
+} from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -8,14 +18,21 @@ import { DashboardUserButton } from "./DashboardUserButton";
 
 const firstSection = [
   { icon: HomeIcon, label: "Dashboard", href: "/" },
-  { icon: VideoIcon, label: "Meeting", href: "/meetings" },
+  { icon: VideoIcon, label: "Meetings", href: "/meetings" },
+  { icon: CalendarIcon, label: "Calendar", href: "/calendar" },
   { icon: BotIcon, label: "Agents", href: "/agents" },
+  { icon: SparklesIcon, label: "Ask AI", href: "/ask-ai" },
+  { icon: BarChart3Icon, label: "Analytics", href: "/analytics" },
+  { icon: BellIcon, label: "Notifications", href: "/notifications" },
 ];
 
 const secondSection = [
   { icon: StarIcon, label: "About Developers", href: "/about-developers" },
   { icon: ArrowUpCircleIcon, label: "Upgrade", href: "/upgrade" },
 ];
+
+const isActiveLink = (pathname: string, href: string) =>
+  href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 
 export const DashboardSidebar = () => {
   const pathname = usePathname();
@@ -47,7 +64,7 @@ export const DashboardSidebar = () => {
         <nav className="space-y-1">
           <p className="px-3 text-xs font-semibold text-[#94a3b8] uppercase tracking-wider mb-2">Menu</p>
           {firstSection.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = isActiveLink(pathname, item.href);
             return (
               <Link
                 key={item.href}
@@ -72,7 +89,7 @@ export const DashboardSidebar = () => {
           <p className="px-3 text-xs font-semibold text-[#94a3b8] uppercase tracking-wider mb-2">Settings</p>
           <nav className="space-y-1">
             {secondSection.map((item) => {
-              const isActive = pathname === item.href;
+              const isActive = isActiveLink(pathname, item.href);
               return (
                 <Link
                   key={item.href}

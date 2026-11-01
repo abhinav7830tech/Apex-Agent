@@ -8,6 +8,27 @@
       "when": 1775645237169,
       "tag": "0000_even_adam_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793366080947,
+      "tag": "0001_confused_kate_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793410873655,
+      "tag": "0002_unique_sphinx",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793418205963,
+      "tag": "0003_lame_sally_floyd",
+      "breakpoints": true
     }
   ]
 }

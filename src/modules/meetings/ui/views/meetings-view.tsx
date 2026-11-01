@@ -1,133 +1,154 @@
-"use client"
+"use client";
 
-import { ErrorState } from "@/components/error-state"
-import { LoadingState } from "@/components/loading-state"
-import { useTRPC } from "@/trpc/client"
-import { useSuspenseQuery } from "@tanstack/react-query"
-import { ChevronRight } from "lucide-react"
-import { useRouter } from "next/navigation"
-import { GeneratedAvatar } from "@/components/generated-avatar"
-import { useMeetingsFilter } from "@/modules/meetings/hooks/use-meetings-filter"
+import { ErrorState } from "@/components/error-state";
+import { LoadingState } from "@/components/loading-state";
+import { useTRPC } from "@/trpc/client";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { ChevronRight, ClockIcon, UsersIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { GeneratedAvatar } from "@/components/generated-avatar";
+import { useMeetingsFilter } from "@/modules/meetings/hooks/use-meetings-filter";
+import { MeetingGetMany } from "../../types";
+import { formatMeetingWindow, getDisplayStatus } from "../../utils";
 
-interface MeetingCardProps {
-  id: string;
-  name: string;
-  status: 'upcoming' | 'active' | 'completed' | 'processing' | 'cancelled';
-  createdAt: string;
-  updatedAt: string;
-  userId: string;
-  agentId: string;
-  agent: {
-    id: string;
-    name: string;
-  };
-}
+type MeetingCardData = MeetingGetMany[number];
 
-const MeetingCard = ({ meeting }: { meeting: MeetingCardProps }) => {
-  const router = useRouter()
+const statusColors: Record<string, string> = {
+  scheduled: "bg-sky-400",
+  upcoming: "bg-amber-400",
+  active: "bg-green-500",
+  completed: "bg-emerald-500",
+  processing: "bg-blue-400",
+  failed: "bg-rose-500",
+  cancelled: "bg-red-400",
+};
 
-  const statusColors: Record<string, string> = {
-    upcoming: 'bg-amber-400',
-    active: 'bg-green-500',
-    completed: 'bg-green-500',
-    processing: 'bg-blue-400',
-    cancelled: 'bg-red-400',
-  }
+const statusText: Record<string, string> = {
+  scheduled: "Scheduled",
+  upcoming: "Upcoming",
+  active: "Active",
+  completed: "Completed",
+  processing: "Processing",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
 
-  const handleCardClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    router.push(`/meetings/${meeting.id}`);
-  }
+const MeetingCard = ({ meeting }: { meeting: MeetingCardData }) => {
+  const router = useRouter();
+  const displayStatus = getDisplayStatus(
+    meeting.status,
+    meeting.scheduledAt,
+    meeting.endsAt,
+  );
 
-  const statusText: Record<string, string> = {
-    upcoming: 'Upcoming',
-    active: 'Active',
-    completed: 'Completed',
-    processing: 'Processing',
-    cancelled: 'Cancelled',
-  }
-
-  const statusColor = statusColors[meeting.status] || 'bg-gray-400'
-  const statusDisplay = statusText[meeting.status] || meeting.status
+  const statusColor = statusColors[displayStatus] ?? "bg-gray-400";
+  const statusDisplay =
+    statusText[displayStatus] ?? String(displayStatus).replace("_", " ");
 
   return (
     <div
       className="border border-green-100 bg-white rounded-xl p-4 hover:shadow-lg hover:shadow-green-100/50 transition-all cursor-pointer hover:border-green-200"
-      onClick={handleCardClick}
+      onClick={() => router.push(`/meetings/${meeting.id}`)}
     >
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center gap-2">
-          <div className={`w-2.5 h-2.5 rounded-full ${statusColor}`}></div>
-          <span className="text-sm text-green-600 font-medium">{statusDisplay}</span>
+          <div className={`w-2.5 h-2.5 rounded-full ${statusColor}`} />
+          <span className="text-sm text-green-600 font-medium">
+            {statusDisplay}
+          </span>
         </div>
         <div className="text-sm text-green-400/70">
-          {meeting.createdAt ? new Date(meeting.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'No time'}
+          {meeting.scheduledAt
+            ? new Date(meeting.scheduledAt).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : meeting.createdAt
+              ? new Date(meeting.createdAt).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "No time"}
         </div>
       </div>
 
-      <h3 className="font-semibold text-slate-700 mb-2 text-lg">{meeting.name}</h3>
+      <h3 className="font-semibold text-slate-700 mb-2 text-lg">
+        {meeting.name}
+      </h3>
+
+      <div className="flex flex-col gap-1 text-xs text-slate-500 mb-3">
+        <span className="flex items-center gap-1.5">
+          <ClockIcon className="h-3 w-3" />
+          {formatMeetingWindow(meeting.scheduledAt, meeting.durationMinutes)}
+        </span>
+        {meeting.participants && meeting.participants.length > 0 && (
+          <span className="flex items-center gap-1.5">
+            <UsersIcon className="h-3 w-3" />
+            {meeting.participants.length} participant
+            {meeting.participants.length === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
 
       <div className="flex items-center justify-between mt-4">
         <div className="flex items-center gap-3">
-          <div className="relative">
-            <GeneratedAvatar
-              seed={meeting.agent?.name || 'Agent'}
-              variant="botttsNeutral"
-              className="h-10 w-10"
-            />
-          </div>
+          <GeneratedAvatar
+            seed={meeting.agent?.name || "Agent"}
+            variant="botttsNeutral"
+            className="h-10 w-10"
+          />
           <div className="flex items-center gap-2">
             <span className="text-green-500 text-sm">With</span>
             <div className="flex items-center gap-1 px-3 py-1.5 bg-green-50 rounded-lg border border-green-100">
-              <p className="text-sm font-medium text-green-700">{meeting.agent?.name || `Agent`}</p>
+              <p className="text-sm font-medium text-green-700">
+                {meeting.agent?.name || "Agent"}
+              </p>
               <ChevronRight className="h-3 w-3 text-green-400" />
             </div>
           </div>
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
 export const MeetingView = () => {
-  const trpc = useTRPC()
+  const trpc = useTRPC();
   const [filters] = useMeetingsFilter();
-  const { data } = useSuspenseQuery(trpc.meetings.getMany.queryOptions({
-    ...filters
-  }))
+  const { data } = useSuspenseQuery(
+    trpc.meetings.getMany.queryOptions({
+      ...filters,
+    }),
+  );
 
   return (
     <div className="container mx-auto p-6">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-slate-700">My Meetings</h1>
-        <div className="mt-2 h-1 w-20 bg-gradient-to-r from-green-400 to-emerald-400 rounded-full"></div>
+        <div className="mt-2 h-1 w-20 bg-gradient-to-r from-green-400 to-emerald-400 rounded-full" />
       </div>
 
       {data?.items?.length === 0 ? (
         <div className="text-center py-16 bg-green-50/50 rounded-2xl border border-green-100">
           <p className="text-green-500 text-lg">No meetings found</p>
-          <p className="text-green-400 text-sm mt-1">Create a new meeting to get started</p>
+          <p className="text-green-400 text-sm mt-1">
+            Create a new meeting to get started
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {data?.items?.map((meeting) => (
-            <MeetingCard
-              key={meeting.id}
-              meeting={meeting}
-            />
+            <MeetingCard key={meeting.id} meeting={meeting} />
           ))}
         </div>
       )}
     </div>
-  )
-}
+  );
+};
 
 export const MeetingsViewLoading = () => {
   return (
-    <LoadingState
-      title="Loading Meetings"
-      description="This may take some time"
-    />
+    <LoadingState title="Loading Meetings" description="This may take some time" />
   );
 };
 

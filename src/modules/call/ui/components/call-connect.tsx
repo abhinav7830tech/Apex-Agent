@@ -8,7 +8,6 @@ import {
   StreamVideo,
   StreamVideoClient,
   CallingState,
-
 } from "@stream-io/video-react-sdk";
 
 import { useTRPC } from "@/trpc/client";
@@ -17,11 +16,11 @@ import "@stream-io/video-react-sdk/dist/css/styles.css";
 import { CallUI } from "./call-ui";
 
 interface Props {
-  meetingId: string
-  meetingName: string
-  userId: string
-  userName: string
-  userImage: string
+  meetingId: string;
+  meetingName: string;
+  userId: string;
+  userName: string;
+  userImage: string;
 }
 
 export const CallConnect = ({
@@ -34,27 +33,28 @@ export const CallConnect = ({
   const trpc = useTRPC();
   const { mutateAsync } = useMutation(
     trpc.meetings.generateToken.mutationOptions(),
-  )
+  );
   const [client, setClient] = useState<StreamVideoClient>();
+
   useEffect(() => {
     const user = {
       id: String(userId),
       name: String(userName),
-      image: userImage ? String(userImage) : undefined
+      image: userImage ? String(userImage) : undefined,
     };
 
     const _client = new StreamVideoClient({
       apiKey: process.env.NEXT_PUBLIC_STREAM_VIDEO_API_KEY!,
       user,
-      tokenProvider: () => mutateAsync(),
+      tokenProvider: () => mutateAsync({ meetingId }),
     });
 
     setClient(_client);
 
     return () => {
-      _client.disconnectUser();
+      void _client.disconnectUser();
     };
-  }, [userId, userName, userImage]);
+  }, [userId, userName, userImage, meetingId, mutateAsync]);
 
   const [call, setCall] = useState<Call>();
   useEffect(() => {
@@ -66,11 +66,11 @@ export const CallConnect = ({
     setCall(call);
 
     return () => {
+      // Leaving must never end the call for other participants.
       if (call.state.callingState !== CallingState.LEFT) {
-        call.leave();
-        call.endCall();
-        setCall(undefined);
+        void call.leave().catch(() => undefined);
       }
+      setCall(undefined);
     };
   }, [client, meetingId]);
 
@@ -81,11 +81,12 @@ export const CallConnect = ({
       </div>
     );
   }
+
   return (
     <StreamVideo client={client}>
       <StreamCall call={call}>
-        <CallUI meetingName={meetingName} />
+        <CallUI meetingId={meetingId} meetingName={meetingName} />
       </StreamCall>
     </StreamVideo>
-  )
-}
+  );
+};
