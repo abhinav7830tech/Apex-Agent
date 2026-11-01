@@ -235,6 +235,16 @@ export const meetingGuests = pgTable(
   ],
 );
 
+export const publicRateLimits = pgTable(
+  "public_rate_limits",
+  {
+    key: text("key").primaryKey(),
+    windowStartedAt: timestamp("window_started_at").notNull(),
+    requestCount: integer("request_count").notNull(),
+  },
+  (table) => [index("public_rate_limits_window_started_at_idx").on(table.windowStartedAt)],
+);
+
 export const transcriptSegments = pgTable(
   "transcript_segments",
   {

@@ -46,6 +46,7 @@ import {
   assertJoinable,
   createGuestIdentity,
   loadInviteContext,
+  revokeInviteStreamUsers,
   toGuestMeeting,
 } from "./guest-access";
 import {
@@ -60,6 +61,7 @@ import { getMeetingEnd, parseScheduledAt } from "../utils";
 import { streamVideo } from "@/lib/stream-video";
 import { GeneratedAvatarUri } from "@/lib/avatar";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
+import { enforcePublicGuestRateLimit } from "@/lib/public-rate-limit";
 
 const CLOSED_STATUSES = [
   MeetingStatus.COMPLETED,
@@ -296,6 +298,15 @@ export const meetingsRouter = createTRPCRouter({
       const now = new Date();
 
       if (input.regenerate) {
+        const activeInvites = await db
+          .select({ id: meetingInvites.id })
+          .from(meetingInvites)
+          .where(
+            and(
+              eq(meetingInvites.meetingId, meeting.id),
+              isNull(meetingInvites.revokedAt),
+            ),
+          );
         await db
           .update(meetingInvites)
           .set({ revokedAt: now })
@@ -305,6 +316,10 @@ export const meetingsRouter = createTRPCRouter({
               isNull(meetingInvites.revokedAt),
             ),
           );
+        await revokeInviteStreamUsers(
+          activeInvites.map(({ id }) => id),
+          meeting.id,
+        );
       } else {
         const [existing] = await db
           .select()
@@ -413,15 +428,26 @@ export const meetingsRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found." });
       }
 
-      await db
-        .update(meetingInvites)
-        .set({ revokedAt: new Date() })
+      const revokedAt = new Date();
+      const [invite] = await db
+        .select({ id: meetingInvites.id })
+        .from(meetingInvites)
         .where(
           and(
             eq(meetingInvites.id, input.inviteId),
             eq(meetingInvites.meetingId, input.meetingId),
           ),
         );
+      await db
+        .update(meetingInvites)
+        .set({ revokedAt })
+        .where(
+          and(
+            eq(meetingInvites.id, input.inviteId),
+            eq(meetingInvites.meetingId, input.meetingId),
+          ),
+        );
+      if (invite) await revokeInviteStreamUsers([invite.id], input.meetingId);
 
       return { success: true };
     }),
@@ -429,6 +455,7 @@ export const meetingsRouter = createTRPCRouter({
   getInvite: publicProcedure
     .input(z.object({ meetingId: z.string().min(1), token: z.string().min(1) }))
     .query(async ({ input }) => {
+      await enforcePublicGuestRateLimit("validate");
       const context = await loadInviteContext(input);
 
       let session: Awaited<ReturnType<typeof auth.api.getSession>> | null = null;
@@ -457,6 +484,7 @@ export const meetingsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      await enforcePublicGuestRateLimit("join");
       const context = await loadInviteContext(input);
       assertJoinable(context);
 
@@ -525,6 +553,7 @@ export const meetingsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input }) => {
+      await enforcePublicGuestRateLimit("refresh");
       const context = await loadInviteContext(input);
       assertJoinable(context);
 
@@ -851,6 +880,31 @@ export const meetingsRouter = createTRPCRouter({
         .set({ status: MeetingStatus.CANCELLED, updatedAt: new Date() })
         .where(and(eq(meetings.id, input.id), eq(meetings.userId, ctx.auth.user.id)))
         .returning();
+
+      // Cancellation is terminal for the invitation credentials. If the host
+      // later reactivates the meeting, they must issue a fresh invitation.
+      const activeInvites = await db
+        .select({ id: meetingInvites.id })
+        .from(meetingInvites)
+        .where(
+          and(
+            eq(meetingInvites.meetingId, input.id),
+            isNull(meetingInvites.revokedAt),
+          ),
+        );
+      await db
+        .update(meetingInvites)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(meetingInvites.meetingId, input.id),
+            isNull(meetingInvites.revokedAt),
+          ),
+        );
+      await revokeInviteStreamUsers(
+        activeInvites.map(({ id }) => id),
+        input.id,
+      );
 
       try {
         await streamVideo.video.call("default", meeting.id).end();

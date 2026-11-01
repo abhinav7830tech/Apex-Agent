@@ -29,6 +29,13 @@
       "when": 1793418205963,
       "tag": "0003_lame_sally_floyd",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793420000000,
+      "tag": "0004_shared_public_rate_limits",
+      "breakpoints": true
     }
   ]
 }

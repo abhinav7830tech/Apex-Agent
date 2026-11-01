@@ -42,13 +42,13 @@ const isProduction = process.env.NODE_ENV === "production";
 const configuredAppOrigins = [
     toOrigin(process.env.BETTER_AUTH_URL),
     toOrigin(process.env.NEXT_PUBLIC_APP_URL),
-    toOrigin(process.env.VERCEL_URL),
-    toOrigin(process.env.NEXT_PUBLIC_VERCEL_URL),
-    "https://ai-agent-meet-lgl8-ganeoou2y-prasoonsingh79s-projects.vercel.app",
-    "https://ai-agent-meet-dlto.vercel.app",
-    "https://ai-agent-meet-dlto-git-main-prasoonsingh79s-projects.vercel.app",
-    "https://ai-saas-agent-chi.vercel.app",
 ].filter((origin): origin is string => Boolean(origin));
+
+// Production trust is exclusively operator configured and HTTPS. Deployment
+// preview hostnames are intentionally excluded because they are ephemeral.
+const productionOrigins = configuredAppOrigins.filter(
+    (origin) => origin.startsWith("https://") && !isLocalOrigin(origin),
+);
 
 // Local origins are only trusted outside production. Both hostnames are
 // included because browsers treat localhost and 127.0.0.1 as different origins.
@@ -60,7 +60,7 @@ const developmentOrigins = [
 
 const trustedOrigins = Array.from(
     new Set([
-        ...configuredAppOrigins,
+        ...(isProduction ? productionOrigins : configuredAppOrigins),
         ...(isProduction ? [] : developmentOrigins),
     ]),
 );
@@ -75,7 +75,9 @@ const configuredBaseURL =
 // Prefer a local URL in development, while keeping the configured production
 // URL untouched for production builds.
 const baseURL = isProduction
-    ? configuredBaseURL ?? undefined
+    ? productionOrigins.includes(configuredBaseURL ?? "")
+        ? configuredBaseURL ?? undefined
+        : undefined
     : configuredBaseURL && isLocalOrigin(configuredBaseURL)
       ? configuredBaseURL
       : LOCAL_DEVELOPMENT_URL;

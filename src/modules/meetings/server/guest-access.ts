@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, getTableColumns } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -10,6 +10,7 @@ import {
   user,
 } from "@/db/schema";
 import { GeneratedAvatarUri } from "@/lib/avatar";
+import { streamVideo } from "@/lib/stream-video";
 import { MeetingStatus } from "../types";
 
 /** Guests may enter the waiting room / join shortly before the start time. */
@@ -281,4 +282,37 @@ export const assertGuestTokenOwner = async ({
     .update(meetingGuests)
     .set({ lastSeenAt: new Date() })
     .where(eq(meetingGuests.id, guest.id));
+};
+
+/**
+ * Invalidate anonymous Stream identities attached to revoked invites. Stream
+ * rejects tokens issued before this timestamp; kicking blocks a current call
+ * session. This cannot revoke signed-in Apex accounts shared across invites.
+ */
+export const revokeInviteStreamUsers = async (inviteIds: string[], meetingId: string) => {
+  if (!inviteIds.length) return;
+  const guests = await db
+    .select({ id: meetingGuests.id })
+    .from(meetingGuests)
+    .where(inArray(meetingGuests.inviteId, inviteIds));
+  if (!guests.length) return;
+
+  const revokedAt = new Date();
+  await streamVideo.updateUsers({
+    users: Object.fromEntries(
+      guests.map(({ id }) => [id, { id, revoke_tokens_issued_before: revokedAt }]),
+    ),
+  });
+  await Promise.all(
+    guests.map(async ({ id }) => {
+      try {
+        await streamVideo.video.call("default", meetingId).kickUser({
+          user_id: id,
+          block: true,
+        });
+      } catch (error) {
+        console.warn("[STREAM] Could not disconnect revoked guest", error);
+      }
+    }),
+  );
 };
