@@ -62,6 +62,12 @@ import { GeneratedAvatarUri } from "@/lib/avatar";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
 import { enforcePublicGuestRateLimit } from "@/lib/public-rate-limit";
 import { createGuestAccessOperations } from "./guest-access-operations";
+import {
+  createHostTokenOperation,
+  hostTokenInputSchema,
+} from "./stream-token-operations";
+import { callMemberUpdates } from "./stream-call-members";
+import { createMeetingOperation } from "./create-meeting-operation";
 
 const CLOSED_STATUSES = [
   MeetingStatus.COMPLETED,
@@ -228,6 +234,12 @@ const ensureStreamCall = async (input: {
       },
     });
 
+    // Membership is scoped to this call. No role name is assigned; Stream's
+    // configured call-type defaults remain authoritative.
+    await call.updateCallMembers(
+      callMemberUpdates(input.userId, input.agent.id),
+    );
+
     await streamVideo.upsertUsers([
       {
         id: input.agent.id,
@@ -247,59 +259,66 @@ const ensureStreamCall = async (input: {
   }
 };
 
+const generateHostStreamToken = createHostTokenOperation({
+  getOwnedMeeting: async (meetingId, userId) => {
+    const [meeting] = await db
+      .select({ id: meetings.id, name: meetings.name, agentId: meetings.agentId })
+      .from(meetings)
+      .where(and(eq(meetings.id, meetingId), eq(meetings.userId, userId)));
+    return meeting ?? null;
+  },
+  ensureCall: async (meeting, user) => {
+    const [agent] = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, meeting.agentId));
+
+    if (!agent) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Meeting agent not found" });
+    }
+
+    const ensured = await ensureStreamCall({
+      meetingId: meeting.id,
+      meetingName: meeting.name,
+      userId: user.id,
+      agent,
+    });
+    if (!ensured) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Unable to authorize meeting call" });
+    }
+  },
+  upsertUser: async (user) => {
+    await streamVideo.upsertUsers([
+      {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        image:
+          user.image ??
+          GeneratedAvatarUri({ seed: user.name, variant: "initials" }),
+      },
+    ]);
+  },
+  generateToken: (userId) =>
+    streamVideo.generateUserToken({
+      user_id: userId,
+      validity_in_seconds: 3600,
+    }),
+});
+
 export const meetingsRouter = createTRPCRouter({
   generateToken: protectedProcedure
-    .input(z.object({ meetingId: z.string().optional() }).optional())
-    .mutation(async ({ ctx, input }) => {
-      if (input?.meetingId) {
-        const [meeting] = await db
-          .select({ id: meetings.id, name: meetings.name, agentId: meetings.agentId })
-          .from(meetings)
-          .where(
-            and(
-              eq(meetings.id, input.meetingId),
-              eq(meetings.userId, ctx.auth.user.id),
-            ),
-          );
-
-        if (!meeting) {
-          throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
-        }
-
-        const [agent] = await db
-          .select()
-          .from(agents)
-          .where(eq(agents.id, meeting.agentId));
-
-        if (agent) {
-          await ensureStreamCall({
-            meetingId: meeting.id,
-            meetingName: meeting.name,
-            userId: ctx.auth.user.id,
-            agent,
-          });
-        }
-      }
-
-      await streamVideo.upsertUsers([
-        {
+    .input(hostTokenInputSchema)
+    .mutation(({ ctx, input }) =>
+      generateHostStreamToken({
+        meetingId: input.meetingId,
+        user: {
           id: ctx.auth.user.id,
           name: ctx.auth.user.name,
-          role: "admin",
-          image:
-            ctx.auth.user.image ??
-            GeneratedAvatarUri({
-              seed: ctx.auth.user.name,
-              variant: "initials",
-            }),
+          image: ctx.auth.user.image,
         },
-      ]);
-
-      return streamVideo.generateUserToken({
-        user_id: ctx.auth.user.id,
-        validity_in_seconds: 3600,
-      });
-    }),
+      }),
+    ),
 
   createInvite: protectedProcedure
     .input(
@@ -669,35 +688,38 @@ export const meetingsRouter = createTRPCRouter({
       });
 
       const meetingId = nanoid();
-      const [createdMeeting] = await db
-        .insert(meetings)
-        .values({
-          ...input,
-          id: meetingId,
-          scheduledAt,
-          endsAt,
-          streamCallId: meetingId,
-          status: MeetingStatus.SCHEDULED,
-          userId: ctx.auth.user.id,
-        })
-        .returning();
-
-      await ensureStreamCall({
-        meetingId: createdMeeting.id,
-        meetingName: createdMeeting.name,
-        userId: ctx.auth.user.id,
-        agent,
+      return createMeetingOperation({
+        persistMeeting: async () => {
+          const [createdMeeting] = await db
+            .insert(meetings)
+            .values({
+              ...input,
+              id: meetingId,
+              scheduledAt,
+              endsAt,
+              streamCallId: meetingId,
+              status: MeetingStatus.SCHEDULED,
+              userId: ctx.auth.user.id,
+            })
+            .returning();
+          return createdMeeting;
+        },
+        ensureStreamCall: (createdMeeting) =>
+          ensureStreamCall({
+            meetingId: createdMeeting.id,
+            meetingName: createdMeeting.name,
+            userId: ctx.auth.user.id,
+            agent,
+          }),
+        sendSuccessNotification: (createdMeeting) =>
+          createNotification({
+            userId: createdMeeting.userId,
+            type: "meeting_reminder",
+            title: "Meeting Scheduled",
+            message: `Your meeting "${createdMeeting.name}" has been scheduled successfully.`,
+            meetingId: createdMeeting.id,
+          }),
       });
-
-      await createNotification({
-        userId: createdMeeting.userId,
-        type: "meeting_reminder",
-        title: "Meeting Scheduled",
-        message: `Your meeting "${createdMeeting.name}" has been scheduled successfully.`,
-        meetingId: createdMeeting.id,
-      });
-
-      return createdMeeting;
     }),
 
   getOne: protectedProcedure

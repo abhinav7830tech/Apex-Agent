@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { assertGuestJoinPolicy } from "./guest-access-policy";
+import { callMemberUpdates } from "./stream-call-members";
 
 export type GuestSessionUser = {
   id: string;
@@ -37,6 +38,11 @@ type GuestStreamClient = {
     user_id: string;
     validity_in_seconds: number;
   }) => string;
+  video: {
+    call: (type: string, id: string) => {
+      updateCallMembers: (input: { update_members: Array<{ user_id: string }> }) => Promise<unknown>;
+    };
+  };
 };
 
 type RateLimitScope = "validate" | "join" | "refresh";
@@ -124,6 +130,9 @@ export const createGuestAccessOperations = <
         image: identity.userImage,
       },
     ]);
+    await stream.video
+      .call("default", input.meetingId)
+      .updateCallMembers(callMemberUpdates(identity.userId));
 
     const validityInSeconds = 30 * 60;
     const streamToken = stream.generateUserToken({
@@ -155,6 +164,9 @@ export const createGuestAccessOperations = <
       guestId: input.guestId,
       sessionUserId: session?.id,
     });
+    await stream.video
+      .call("default", input.meetingId)
+      .updateCallMembers(callMemberUpdates(input.guestId));
 
     const validityInSeconds = 30 * 60;
     const streamToken = stream.generateUserToken({

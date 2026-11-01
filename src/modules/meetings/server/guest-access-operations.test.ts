@@ -33,10 +33,13 @@ const fixture = () => {
     increments: [] as Array<{ inviteId: string; usedAt: Date }>,
     revocations: [] as Array<{ inviteIds: string[]; meetingId: string }>,
     tokens: [] as Array<{ user_id: string; validity_in_seconds: number }>,
+    users: [] as Array<{ id: string; role: string }>,
+    callMembers: [] as Array<{ meetingId: string; userId: string }>,
   };
   let session: { id: string; name: string; image?: string | null } | null = null;
   let owner = true;
   let streamFailure = false;
+  let membershipFailure = false;
   const operations = createGuestAccessOperations({
     enforceRateLimit: async (scope) => { calls.scopes.push(scope); },
     loadInviteContext: async ({ meetingId, token }) => evaluateInviteContext(
@@ -55,8 +58,19 @@ const fixture = () => {
     },
     toGuestMeeting: (context) => ({ meetingId: context.meeting.id }),
     stream: {
-      upsertUsers: async () => { if (streamFailure) throw new Error("mock Stream outage"); },
+      upsertUsers: async (users) => {
+        if (streamFailure) throw new Error("mock Stream outage");
+        calls.users.push(...users.map(({ id, role }) => ({ id, role })));
+      },
       generateUserToken: (input) => { calls.tokens.push(input); return "stream-token"; },
+      video: {
+        call: (_type, meetingId) => ({
+          updateCallMembers: async ({ update_members }) => {
+            if (membershipFailure) throw new Error("mock Stream membership outage");
+            calls.callMembers.push(...update_members.map(({ user_id }) => ({ meetingId, userId: user_id })));
+          },
+        }),
+      },
     },
     incrementInviteUse: async (inviteId, usedAt) => { calls.increments.push({ inviteId, usedAt }); },
     isMeetingOwned: async () => owner,
@@ -75,6 +89,7 @@ const fixture = () => {
     setSession: (value: typeof session) => { session = value; },
     setOwner: (value: boolean) => { owner = value; },
     setStreamFailure: (value: boolean) => { streamFailure = value; },
+    setMembershipFailure: (value: boolean) => { membershipFailure = value; },
   };
 };
 
@@ -131,6 +146,8 @@ describe("guest access operations (mocked repository, auth and Stream)", () => {
     assert.equal(joined.expiresInSeconds, 1800);
     assert.equal(f.calls.increments[0]?.inviteId, "invite-1");
     assert.equal(f.calls.tokens[0]?.validity_in_seconds, 1800);
+    assert.deepEqual(f.calls.users[0], { id: "guest-1", role: "user" });
+    assert.deepEqual(f.calls.callMembers[0], { meetingId: "meeting-1", userId: "guest-1" });
   });
 
   it("keeps signed-in users as their own identity and enforces account-only invites", async () => {
@@ -140,6 +157,8 @@ describe("guest access operations (mocked repository, auth and Stream)", () => {
     assert.equal(joined.userId, "member-1");
     assert.equal(joined.guestRecordId, null);
     assert.equal(f.calls.identities[0]?.sessionUser?.id, "member-1");
+    assert.deepEqual(f.calls.users[0], { id: "member-1", role: "user" });
+    assert.deepEqual(f.calls.callMembers[0], { meetingId: "meeting-1", userId: "member-1" });
 
     const restricted = fixture();
     restricted.row.invite.requireAccount = true;
@@ -166,6 +185,19 @@ describe("guest access operations (mocked repository, auth and Stream)", () => {
     await assert.rejects(f.operations.join({ meetingId: "meeting-1", token: "invite-1", displayName: "Guest" }), /Stream outage/);
     assert.equal(f.calls.tokens.length, 0);
     assert.equal(f.calls.increments.length, 0);
+  });
+
+  it("does not issue a token, increment invite usage, or return success when call membership update fails", async () => {
+    const f = fixture();
+    f.setMembershipFailure(true);
+
+    await assert.rejects(
+      f.operations.join({ meetingId: "meeting-1", token: "invite-1", displayName: "Guest" }),
+      /Stream membership outage/,
+    );
+    assert.equal(f.calls.tokens.length, 0);
+    assert.equal(f.calls.increments.length, 0);
+    assert.equal(f.calls.callMembers.length, 0);
   });
 
   it("commits invite revocation before best-effort Stream cleanup and enforces host ownership", async () => {
