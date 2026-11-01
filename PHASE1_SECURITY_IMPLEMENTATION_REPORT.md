@@ -1,60 +1,37 @@
-# Phase 1 — Production Security Hardening
+# Phase 1 Security Hardening — Phase 1.3
 
-## Changes made
+## Scope delivered
 
-- Added a PostgreSQL-backed, atomic fixed-window limiter for guest invite validation, join, and refresh procedures. Limits are per client address and endpoint class; over-limit requests return tRPC `TOO_MANY_REQUESTS` (HTTP 429) with retry seconds in the response message. Database failures fail closed with `SERVICE_UNAVAILABLE` (HTTP 503).
-- Added Stream revocation for anonymous guest users associated with a revoked invite. Stream tokens issued before revocation are invalidated with `revoke_tokens_issued_before`; active guest sessions are also kicked and blocked from rejoining the meeting call.
-- Revoked active invitation records when a meeting is cancelled. Reactivating a cancelled meeting therefore requires the host to issue a new invite. Explicit invite regeneration also invalidates associated Stream guest identities.
-- Removed hard-coded production and preview origins from Better Auth. Production trusts only configured HTTPS, non-local origins; Vercel preview hostnames and localhost are not added in production.
-- Existing production invitation URL construction already required an explicitly configured HTTPS origin; that behavior remains the production requirement.
+- Trusted client IP extraction requires the operator to name the production ingress header with `PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER`. `VERCEL=1` is not treated as proof that the deployment has direct Vercel ingress. Only one syntactically valid address is accepted; missing, malformed, chained, or unconfigured production identity fails closed. IPv6 spellings are canonicalized before hashing.
+- The shared PostgreSQL limiter uses atomic upsert counters and a sampled cleanup query capped at 100 expired rows per pass. The delete repeats its expiry predicate, so active windows are retained. Cleanup errors are logged and do not interrupt the request; limiter storage failures fail closed.
+- The shared production URL parser requires a public HTTPS origin, rejects credentials and URL components beyond the origin, and classifies IP literals using `ipaddr.js` with explicit handling for `3ff0::/13` and the globally reachable `192.0.0.9` and `192.0.0.10` exceptions. Development URL behavior remains unchanged.
+- Guest validation, join, refresh, and invite revocation delegate to injectable operations. Existing PostgreSQL invite state remains authoritative for future validation, join, and refresh. Stream revocation is best effort, retries twice, and emits structured error events; Stream calls are scoped to anonymous guest records. Signed-in account identities are not stored as guest records or revoked through this path.
+- Guest lifecycle policy rejects invalid, expired, revoked, cancelled, completed, processing, failed, and past-window meetings, and preserves scheduled waiting behavior and the account requirement.
 
-## Files changed
+## Verification
 
-- `src/lib/public-rate-limit.ts`
-- `src/lib/rate-limit-policy.ts`
-- `src/lib/rate-limit-policy.test.ts`
-- `src/lib/auth.ts`
-- `src/modules/meetings/server/guest-access.ts`
-- `src/modules/meetings/server/procedures.ts`
-- `src/db/schema.ts`
-- `drizzle/0004_shared_public_rate_limits.sql`
-- `drizzle/meta/_journal.json`
-- `package.json`
+Test categories and coverage:
 
-## Security improvements
+- **Unit tests:** URL/IP classification, trusted-header choice and parsing, limiter policy, invite lifecycle and guest ownership.
+- **Isolated PostgreSQL adapter tests:** `@electric-sql/pglite` runs a disposable in-memory PostgreSQL engine against the production Drizzle adapter. Coverage includes atomic upsert counts, exact window expiry, 32 concurrent increments, bounded cleanup with active rows retained, and adapter storage failures. This is not Neon or production PostgreSQL, and does not verify a separate multi-connection deployment.
+- **Mocked guest operation integration tests:** Exercise the same injectable operations called by the tRPC procedures with in-memory repository/auth state and mocked Stream calls. Coverage includes invite validation, viewer/host information, join, token lifetime, account gating, signed-in identity preservation, refresh ownership, expiry/revocation, lifecycle states, invite use counts, host-only invite revocation, and Stream failures. These do not make real HTTP/tRPC requests or use a real database/Auth/Stream service.
+- **Mocked Stream tests:** Verify bounded retries, failure reporting, and empty guest handling. No Stream project was contacted.
 
-- Shared rate-limit state works across application instances and does not degrade to per-process memory. Missing rate-limit storage disables public guest access temporarily instead of allowing requests through.
-- Revoked invitations cannot pass guest validation, joining, or refresh. For anonymous guest Stream identities, the SDK’s user token revocation timestamp is applied and active call sessions are kicked.
-- Cancelled meeting invitations are permanently revoked, so reactivation cannot make their old credentials valid again. Rescheduling keeps otherwise valid invitations; normal expiry and meeting time checks still apply.
-- Production authentication trust no longer includes checked-in preview domains or localhost.
+Commands and results:
 
-## Tests and checks executed
+- `npm run test:security` — **passed: 29 tests, 6 suites** after the final guest lifecycle and refresh-expiry assertions. Uses PGlite in-memory and mocks only; no Neon/production DB connection. The sandbox initially denied the `tsx` local IPC socket; the approved command was rerun with local IPC permission.
+- `npx tsc --noEmit` — **passed** after the guest operation return types were preserved for tRPC inference.
+- `npm run lint` — **passed**, no ESLint warnings or errors. Next.js reports `next lint` is deprecated and warns it inferred the workspace root from the parent lockfile.
+- `npm run build` — **passed**, optimized Next.js production build completed. It was supplied placeholder credentials and `DATABASE_URL` pointed at `127.0.0.1:1`; no database connection or migration command was made. Next.js reports the same workspace-root warning. The build log indicates Next.js loaded the `.env` filename; no `.env` contents were read or displayed, and explicit placeholder process environment values were supplied for the build.
+- `git diff --check` — **passed**; no whitespace errors. `git diff --name-only -- drizzle` returned no paths.
 
-- `npm run test:security` — **passed**, 2 tests. Covers per-window threshold behavior and positive retry timing. It required an elevated local run because `tsx` creates an IPC socket that the sandbox denied.
-- `npx tsc --noEmit` — **passed**.
-- `npm run lint` — **passed**, no ESLint warnings or errors. The command reports that `next lint` is deprecated.
-- `npm run build` — **passed**, optimized production build completed. Next.js warned that it inferred the workspace root from a parent lockfile; this did not fail the build.
-- `git diff --check` — **passed**.
+## Deployment configuration and limits
 
-## Remaining risks and unverified behavior
-
-- The automated suite is currently a policy unit test, not an integration suite. Unauthorized access, expired/revoked invitation responses, cancellation/reactivation, rescheduling, database-backed rate-limit enforcement, and Stream refresh/revocation were not exercised end to end.
-- Rate-limit keys use the client address supplied by the hosting ingress (`x-forwarded-for`, then `x-real-ip`). Production ingress must overwrite/sanitize these headers so clients cannot choose their own rate-limit identity.
-- Stream token revocation is applied only to anonymous guest identities recorded against the invite. Signed-in users retain their account identity and are not revoked globally when one invite is revoked. A currently active anonymous guest session is kicked; behavior ultimately depends on Stream accepting the SDK update/kick requests.
-- Rate-limit counters remain in PostgreSQL after their windows expire. Periodic cleanup should be added before sustained high-volume operation to bound table growth.
-- Revocation cannot reach Stream if its service is unavailable at the time of the operation. The invitation is already marked revoked in PostgreSQL, so further token refresh is blocked; already-issued Stream access may remain valid until Stream processes revocation or its 30-minute token expires.
-
-## External configuration required
-
-- Apply `drizzle/0004_shared_public_rate_limits.sql` to the intended database through the normal reviewed deployment process before enabling the guest APIs with the new limiter. **No migration was run in this task.**
-- Set `NEXT_PUBLIC_APP_URL` and/or `BETTER_AUTH_URL` to the canonical public production HTTPS origin. Production invite creation requires this configuration; production Better Auth trusts only those configured HTTPS origins.
-- Ensure the production proxy supplies a trustworthy client IP header.
-- Stream API credentials must remain configured for issuing and revoking guest tokens. No new external service or credential was introduced.
-
-## Features not fully verified
-
-- End-to-end guest API abuse handling and `Retry-After` HTTP header behavior. Retry seconds are currently included in the tRPC error message; a dedicated HTTP `Retry-After` header is not emitted by this implementation.
-- Stream server-side revocation and live-session kick against a real Stream project.
-- Lifecycle and authorization regression scenarios listed above require an isolated test database and Stream test credentials. They should be added and run before production rollout.
-
-Phase 1 implementation work is complete in this checkpoint. Phase 2 has not been started.
+- Repository evidence does not verify the production Vercel project or ingress topology. Dashboard access or operator confirmation is still required.
+- Set `PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER` to the single-value client IP header the actual ingress overwrites. For a verified direct Vercel deployment, confirm the current ingress behavior and configure the corresponding header (expected `x-forwarded-for`). Do not rely on `VERCEL=1` alone. Ensure there is no bypass route to the app where clients can forge that header. Missing or invalid identity intentionally makes guest access unavailable with a service error.
+- Set `NEXT_PUBLIC_APP_URL` and/or `BETTER_AUTH_URL` to the canonical public HTTPS origin. Invalid production values are rejected. Better Auth production trust is limited to those valid configured origins.
+- Apply the existing shared rate-limit table SQL through the normal reviewed deployment process before enabling the endpoints. No database was contacted, no migration was run, and no migration-history/schema file was changed in this phase.
+- PostgreSQL behavior was exercised only in PGlite. Production database concurrency, schema rollout, and ingress behavior remain unverified.
+- Stream behavior remains mocked. Invite revocation in the database blocks subsequent API access; it does not prove immediate revocation of a Stream token already issued. If Stream revocation fails, an already-issued token may remain valid for up to its configured 30-minute lifetime. There is no durable retry queue. A join already past its invite check may finish during a concurrent revocation.
+- Hostname validation is offline and does not resolve DNS. A configured public-looking hostname that resolves to an internal address is not detected.
+- No Phase 2 work has started.

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:security": "tsx --test src/lib/*.test.ts",
+    "test:security": "tsx --test src/lib/*.test.ts src/modules/meetings/server/*.test.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:generate": "drizzle-kit generate",
@@ -68,6 +68,7 @@
     "humanize-duration": "^3.33.1",
     "inngest": "^3.54.2",
     "input-otp": "^1.4.2",
+    "ipaddr.js": "^2.5.0",
     "jsonl-parse-stringify": "^1.0.3",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.539.0",
@@ -96,6 +97,7 @@
     "zr": "^0.1.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.14",
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/humanize-duration": "^3.27.4",

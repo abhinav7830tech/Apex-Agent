@@ -11,14 +11,15 @@ import {
 } from "@/db/schema";
 import { GeneratedAvatarUri } from "@/lib/avatar";
 import { streamVideo } from "@/lib/stream-video";
-import { MeetingStatus } from "../types";
+import { revokeStreamGuestIdentities } from "./stream-guest-revocation";
+import {
+  evaluateInviteContext,
+  isGuestIdentityOwner,
+  type GuestAccessState,
+} from "./guest-access-policy";
 
-/** Guests may enter the waiting room / join shortly before the start time. */
-export const JOIN_EARLY_MS = 10 * 60 * 1000;
-/** A scheduled meeting stays joinable for a short grace period after its end. */
-export const JOIN_GRACE_MS = 15 * 60 * 1000;
-
-export type GuestAccessState = "joinable" | "waiting";
+export { assertGuestJoinPolicy } from "./guest-access-policy";
+export type { GuestAccessState } from "./guest-access-policy";
 
 export type GuestMeeting = {
   id: string;
@@ -75,81 +76,7 @@ export const loadInviteContext = async ({
       and(eq(meetingInvites.id, token), eq(meetingInvites.meetingId, meetingId)),
     );
 
-  if (!row) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message:
-        "This invitation link is invalid. Check that you copied the full link, or ask the host for a new invitation.",
-    });
-  }
-
-  if (row.invite.revokedAt) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message:
-        "This invitation link has been revoked by the host. Ask them for a new link.",
-    });
-  }
-
-  const now = new Date();
-
-  if (row.invite.expiresAt.getTime() <= now.getTime()) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message:
-        "This invitation link has expired. Ask the host to send you a new invitation.",
-    });
-  }
-
-  const { meeting } = row;
-
-  if (meeting.status === MeetingStatus.CANCELLED) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "This meeting has been cancelled by the host.",
-    });
-  }
-
-  if (
-    meeting.status === MeetingStatus.COMPLETED ||
-    meeting.status === MeetingStatus.PROCESSING
-  ) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "This meeting has already ended.",
-    });
-  }
-
-  if (meeting.status === MeetingStatus.FAILED) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "This meeting could not be completed, so it is no longer joinable.",
-    });
-  }
-
-  let state: GuestAccessState = "joinable";
-  let joinableAt: Date | null = null;
-
-  if (meeting.status !== MeetingStatus.ACTIVE && meeting.scheduledAt) {
-    const opensAt = new Date(meeting.scheduledAt.getTime() - JOIN_EARLY_MS);
-    const closesAt = endOfMeeting(meeting);
-
-    if (now.getTime() < opensAt.getTime()) {
-      state = "waiting";
-      joinableAt = opensAt;
-    } else if (
-      closesAt &&
-      now.getTime() > closesAt.getTime() + JOIN_GRACE_MS
-    ) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message:
-          "The scheduled time for this meeting has passed. Ask the host to reschedule or send a new invitation.",
-      });
-    }
-  }
-
-  return { ...row, state, joinableAt, now };
+  return evaluateInviteContext(row, new Date());
 };
 
 export const toGuestMeeting = ({
@@ -176,18 +103,6 @@ export const toGuestMeeting = ({
   joinableAt: joinableAt ? joinableAt.toISOString() : null,
   serverTime: now.toISOString(),
 });
-
-export const assertJoinable = (
-  context: Awaited<ReturnType<typeof loadInviteContext>>,
-) => {
-  if (context.state !== "joinable") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message:
-        "The meeting is not open yet. Stay on this page and you will be able to join when the host starts it.",
-    });
-  }
-};
 
 export const sanitizeDisplayName = (value: string) => {
   const cleaned = value
@@ -261,7 +176,11 @@ export const assertGuestTokenOwner = async ({
   }
 
   const [guest] = await db
-    .select({ id: meetingGuests.id })
+    .select({
+      id: meetingGuests.id,
+      meetingId: meetingGuests.meetingId,
+      inviteId: meetingGuests.inviteId,
+    })
     .from(meetingGuests)
     .where(
       and(
@@ -271,7 +190,12 @@ export const assertGuestTokenOwner = async ({
       ),
     );
 
-  if (!guest) {
+  if (!isGuestIdentityOwner({
+    guest,
+    guestId,
+    meetingId,
+    inviteId: token,
+  })) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Your guest session is no longer valid. Rejoin using the invitation link.",
@@ -295,24 +219,9 @@ export const revokeInviteStreamUsers = async (inviteIds: string[], meetingId: st
     .select({ id: meetingGuests.id })
     .from(meetingGuests)
     .where(inArray(meetingGuests.inviteId, inviteIds));
-  if (!guests.length) return;
-
-  const revokedAt = new Date();
-  await streamVideo.updateUsers({
-    users: Object.fromEntries(
-      guests.map(({ id }) => [id, { id, revoke_tokens_issued_before: revokedAt }]),
-    ),
+  return revokeStreamGuestIdentities({
+    guestIds: guests.map(({ id }) => id),
+    meetingId,
+    client: streamVideo,
   });
-  await Promise.all(
-    guests.map(async ({ id }) => {
-      try {
-        await streamVideo.video.call("default", meetingId).kickUser({
-          user_id: id,
-          block: true,
-        });
-      } catch (error) {
-        console.warn("[STREAM] Could not disconnect revoked guest", error);
-      }
-    }),
-  );
 };

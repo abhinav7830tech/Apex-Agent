@@ -43,7 +43,6 @@ import {
 } from "@/lib/app-url";
 import {
   assertGuestTokenOwner,
-  assertJoinable,
   createGuestIdentity,
   loadInviteContext,
   revokeInviteStreamUsers,
@@ -62,6 +61,7 @@ import { streamVideo } from "@/lib/stream-video";
 import { GeneratedAvatarUri } from "@/lib/avatar";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
 import { enforcePublicGuestRateLimit } from "@/lib/public-rate-limit";
+import { createGuestAccessOperations } from "./guest-access-operations";
 
 const CLOSED_STATUSES = [
   MeetingStatus.COMPLETED,
@@ -139,6 +139,65 @@ const createNotification = async (input: {
 }) => {
   await db.insert(notifications).values(input);
 };
+
+const guestAccessOperations = createGuestAccessOperations({
+  enforceRateLimit: enforcePublicGuestRateLimit,
+  loadInviteContext,
+  getSession: async () => {
+    try {
+      const session = await auth.api.getSession({ headers: await headers() });
+      return session
+        ? { id: session.user.id, name: session.user.name, image: session.user.image }
+        : null;
+    } catch {
+      return null;
+    }
+  },
+  createGuestIdentity,
+  assertGuestTokenOwner,
+  toGuestMeeting,
+  stream: streamVideo,
+  incrementInviteUse: async (inviteId, usedAt) => {
+    await db
+      .update(meetingInvites)
+      .set({
+        useCount: sql`${meetingInvites.useCount} + 1`,
+        lastUsedAt: usedAt,
+      })
+      .where(eq(meetingInvites.id, inviteId));
+  },
+  isMeetingOwned: async (meetingId, userId) => {
+    const [meeting] = await db
+      .select({ id: meetings.id })
+      .from(meetings)
+      .where(and(eq(meetings.id, meetingId), eq(meetings.userId, userId)));
+    return Boolean(meeting);
+  },
+  getInviteId: async (meetingId, inviteId) => {
+    const [invite] = await db
+      .select({ id: meetingInvites.id })
+      .from(meetingInvites)
+      .where(
+        and(
+          eq(meetingInvites.id, inviteId),
+          eq(meetingInvites.meetingId, meetingId),
+        ),
+      );
+    return invite?.id ?? null;
+  },
+  markInviteRevoked: async (meetingId, inviteId, revokedAt) => {
+    await db
+      .update(meetingInvites)
+      .set({ revokedAt })
+      .where(
+        and(
+          eq(meetingInvites.id, inviteId),
+          eq(meetingInvites.meetingId, meetingId),
+        ),
+      );
+  },
+  revokeStreamUsers: revokeInviteStreamUsers,
+});
 
 const ensureStreamCall = async (input: {
   meetingId: string;
@@ -414,66 +473,16 @@ export const meetingsRouter = createTRPCRouter({
   revokeInvite: protectedProcedure
     .input(z.object({ meetingId: z.string().min(1), inviteId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const [meeting] = await db
-        .select({ id: meetings.id })
-        .from(meetings)
-        .where(
-          and(
-            eq(meetings.id, input.meetingId),
-            eq(meetings.userId, ctx.auth.user.id),
-          ),
-        );
-
-      if (!meeting) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found." });
-      }
-
-      const revokedAt = new Date();
-      const [invite] = await db
-        .select({ id: meetingInvites.id })
-        .from(meetingInvites)
-        .where(
-          and(
-            eq(meetingInvites.id, input.inviteId),
-            eq(meetingInvites.meetingId, input.meetingId),
-          ),
-        );
-      await db
-        .update(meetingInvites)
-        .set({ revokedAt })
-        .where(
-          and(
-            eq(meetingInvites.id, input.inviteId),
-            eq(meetingInvites.meetingId, input.meetingId),
-          ),
-        );
-      if (invite) await revokeInviteStreamUsers([invite.id], input.meetingId);
-
-      return { success: true };
+      return guestAccessOperations.revokeInvite({
+        meetingId: input.meetingId,
+        inviteId: input.inviteId,
+        userId: ctx.auth.user.id,
+      });
     }),
 
   getInvite: publicProcedure
     .input(z.object({ meetingId: z.string().min(1), token: z.string().min(1) }))
-    .query(async ({ input }) => {
-      await enforcePublicGuestRateLimit("validate");
-      const context = await loadInviteContext(input);
-
-      let session: Awaited<ReturnType<typeof auth.api.getSession>> | null = null;
-      try {
-        session = await auth.api.getSession({ headers: await headers() });
-      } catch {
-        session = null;
-      }
-
-      return {
-        meeting: toGuestMeeting(context),
-        viewer: {
-          authenticated: Boolean(session),
-          isHost: session?.user.id === context.meeting.userId,
-          name: session?.user.name ?? null,
-        },
-      };
-    }),
+    .query(({ input }) => guestAccessOperations.validateInvite(input)),
 
   guestJoin: publicProcedure
     .input(
@@ -483,66 +492,7 @@ export const meetingsRouter = createTRPCRouter({
         displayName: z.string().max(80).optional(),
       }),
     )
-    .mutation(async ({ input }) => {
-      await enforcePublicGuestRateLimit("join");
-      const context = await loadInviteContext(input);
-      assertJoinable(context);
-
-      let session: Awaited<ReturnType<typeof auth.api.getSession>> | null = null;
-      try {
-        session = await auth.api.getSession({ headers: await headers() });
-      } catch {
-        session = null;
-      }
-
-      if (context.invite.requireAccount && !session) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "The host requires guests to sign in before joining this meeting.",
-        });
-      }
-
-      const identity = await createGuestIdentity({
-        meetingId: context.meeting.id,
-        inviteId: context.invite.id,
-        displayName: input.displayName,
-        sessionUser: session?.user,
-      });
-
-      await streamVideo.upsertUsers([
-        {
-          id: identity.userId,
-          name: identity.userName,
-          role: "user",
-          image: identity.userImage,
-        },
-      ]);
-
-      const validityInSeconds = 30 * 60;
-      const streamToken = streamVideo.generateUserToken({
-        user_id: identity.userId,
-        validity_in_seconds: validityInSeconds,
-      });
-
-      await db
-        .update(meetingInvites)
-        .set({
-          useCount: sql`${meetingInvites.useCount} + 1`,
-          lastUsedAt: new Date(),
-        })
-        .where(eq(meetingInvites.id, context.invite.id));
-
-      return {
-        userId: identity.userId,
-        userName: identity.userName,
-        userImage: identity.userImage,
-        guestRecordId: identity.guestRecordId,
-        streamToken,
-        expiresInSeconds: validityInSeconds,
-        meeting: toGuestMeeting(context),
-      };
-    }),
+    .mutation(({ input }) => guestAccessOperations.join(input)),
 
   guestRefreshToken: publicProcedure
     .input(
@@ -552,41 +502,7 @@ export const meetingsRouter = createTRPCRouter({
         guestId: z.string().min(1),
       }),
     )
-    .mutation(async ({ input }) => {
-      await enforcePublicGuestRateLimit("refresh");
-      const context = await loadInviteContext(input);
-      assertJoinable(context);
-
-      let session: Awaited<ReturnType<typeof auth.api.getSession>> | null = null;
-      try {
-        session = await auth.api.getSession({ headers: await headers() });
-      } catch {
-        session = null;
-      }
-
-      if (context.invite.requireAccount && !session) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "The host requires guests to sign in before joining this meeting.",
-        });
-      }
-
-      await assertGuestTokenOwner({
-        meetingId: input.meetingId,
-        token: input.token,
-        guestId: input.guestId,
-        sessionUserId: session?.user.id,
-      });
-
-      const validityInSeconds = 30 * 60;
-      const streamToken = streamVideo.generateUserToken({
-        user_id: input.guestId,
-        validity_in_seconds: validityInSeconds,
-      });
-
-      return { streamToken, expiresInSeconds: validityInSeconds };
-    }),
+    .mutation(({ input }) => guestAccessOperations.refreshToken(input)),
 
   update: protectedProcedure
     .input(meetingsUpdateSchema)

@@ -1,4 +1,5 @@
 import "server-only";
+import { parseProductionOrigin } from "@/lib/application-origin";
 
 const LOCAL_DEVELOPMENT_URL = "http://localhost:3000";
 
@@ -66,7 +67,9 @@ export const getAppBaseUrl = (): string | null => {
     );
   }
 
-  return origins.find((origin) => origin.startsWith("https://")) ?? null;
+  return [process.env.NEXT_PUBLIC_APP_URL, process.env.BETTER_AUTH_URL]
+    .map(parseProductionOrigin)
+    .find((origin): origin is string => Boolean(origin)) ?? null;
 };
 
 export class AppUrlConfigurationError extends Error {

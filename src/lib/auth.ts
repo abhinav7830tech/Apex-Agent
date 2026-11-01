@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
+import { parseProductionOrigin } from "@/lib/application-origin";
 
 const LOCAL_DEVELOPMENT_URL = "http://localhost:3000";
 
@@ -40,15 +41,17 @@ const isLocalOrigin = (origin: string) => {
 const isProduction = process.env.NODE_ENV === "production";
 
 const configuredAppOrigins = [
-    toOrigin(process.env.BETTER_AUTH_URL),
-    toOrigin(process.env.NEXT_PUBLIC_APP_URL),
+    isProduction
+        ? parseProductionOrigin(process.env.BETTER_AUTH_URL)
+        : toOrigin(process.env.BETTER_AUTH_URL),
+    isProduction
+        ? parseProductionOrigin(process.env.NEXT_PUBLIC_APP_URL)
+        : toOrigin(process.env.NEXT_PUBLIC_APP_URL),
 ].filter((origin): origin is string => Boolean(origin));
 
 // Production trust is exclusively operator configured and HTTPS. Deployment
 // preview hostnames are intentionally excluded because they are ephemeral.
-const productionOrigins = configuredAppOrigins.filter(
-    (origin) => origin.startsWith("https://") && !isLocalOrigin(origin),
-);
+const productionOrigins = configuredAppOrigins;
 
 // Local origins are only trusted outside production. Both hostnames are
 // included because browsers treat localhost and 127.0.0.1 as different origins.
@@ -66,8 +69,12 @@ const trustedOrigins = Array.from(
 );
 
 const configuredBaseURL =
-    toOrigin(process.env.BETTER_AUTH_URL) ??
-    toOrigin(process.env.NEXT_PUBLIC_APP_URL);
+    (isProduction
+        ? parseProductionOrigin(process.env.BETTER_AUTH_URL)
+        : toOrigin(process.env.BETTER_AUTH_URL)) ??
+    (isProduction
+        ? parseProductionOrigin(process.env.NEXT_PUBLIC_APP_URL)
+        : toOrigin(process.env.NEXT_PUBLIC_APP_URL));
 
 // In development the local .env may still point at production. Using that URL
 // as Better Auth's baseURL makes it issue Secure cookies and production
