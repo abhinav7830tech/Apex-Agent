@@ -40,7 +40,13 @@ export const MeetingIdView = ({ meetingId }: Props) => {
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
 
   const { data } = useSuspenseQuery(
-    trpc.meetings.getOne.queryOptions({ id: meetingId }),
+    trpc.meetings.getOne.queryOptions(
+      { id: meetingId },
+      {
+        refetchInterval: (query) =>
+          query.state.data?.status === MeetingStatus.PROCESSING ? 3000 : false,
+      },
+    ),
   );
 
   const invalidateMeeting = async () => {
@@ -101,6 +107,7 @@ export const MeetingIdView = ({ meetingId }: Props) => {
       />
       <InviteGuestsDialog
         meetingId={meetingId}
+        meetingTitle={data.name}
         open={inviteDialogOpen}
         onOpenChange={setInviteDialogOpen}
       />

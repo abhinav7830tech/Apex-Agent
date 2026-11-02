@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { PlusIcon, XCircleIcon } from "lucide-react";
+import { LogInIcon, PlusIcon, XCircleIcon } from "lucide-react";
 import { NewMeeetingDialog } from "./new-meeting-dialog";
 import { useState } from "react";
 import { MeetingsSearchFilter } from "./meetings-search-fliters";
@@ -15,44 +16,56 @@ export const MeetingsListHeader = () => {
     const [isDialogOpen, setIsDialogOpen] = useState(false);
 
     const clearFilters = () => {
-        setFilters({ 
-            search: '', 
-            status: null, 
+        setFilters({
+            search: '',
+            status: null,
             agentId: '',
-            page: 1 
+            page: 1
         });
     };
 
-    const isAnyFilterModified = 
-        filters.search !== '' || 
+    const isAnyFilterModified =
+        filters.search !== '' ||
         filters.status !== null||
         filters.agentId !== '';
   return (
     <>
     <NewMeeetingDialog open={isDialogOpen} onOpenChange={setIsDialogOpen}/>
       <div className="py-6 px-4 md:py-8 flex flex-col gap-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h5 className="text-2xl font-bold text-slate-700">My Meetings</h5>
             <div className="mt-1 h-1 w-16 bg-gradient-to-r from-green-400 to-emerald-400 rounded-full"></div>
           </div>
-          <Button 
-            onClick={() => setIsDialogOpen(true)}
-            className="bg-green-500 hover:bg-green-600 text-white font-medium px-4 py-2 rounded-lg shadow-md shadow-green-100"
-          >
-            <PlusIcon className="size-4 mr-2" />
-            New Meeting
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              asChild
+              variant="outline"
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-medium px-3.5 py-2 rounded-lg"
+            >
+              <Link href="/join">
+                <LogInIcon className="size-4 mr-1.5" />
+                Join with ID
+              </Link>
+            </Button>
+            <Button
+              onClick={() => setIsDialogOpen(true)}
+              className="bg-green-500 hover:bg-green-600 text-white font-medium px-4 py-2 rounded-lg shadow-md shadow-green-100"
+            >
+              <PlusIcon className="size-4 mr-2" />
+              New Meeting
+            </Button>
+          </div>
         </div>
-       
+
         <ScrollArea className="w-full whitespace-nowrap pb-2">
           <div className="flex items-center gap-x-2 p-1 w-max">
             <MeetingsSearchFilter/>
             <StatusFilter/>
             <AgentIdFilter/>
             {isAnyFilterModified && (
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 onClick={clearFilters}
                 className="shrink-0 border-green-200 text-green-600 hover:bg-green-50"
               >

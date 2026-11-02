@@ -33,6 +33,7 @@ export type GuestMeeting = {
   agentName: string;
   participants: string[];
   requireAccount: boolean;
+  requiresPasscode: boolean;
   state: GuestAccessState;
   joinableAt: string | null;
   serverTime: string;
@@ -99,6 +100,7 @@ export const toGuestMeeting = ({
   agentName,
   participants: meeting.participants ?? [],
   requireAccount: invite.requireAccount,
+  requiresPasscode: Boolean(meeting.passcodeHash),
   state,
   joinableAt: joinableAt ? joinableAt.toISOString() : null,
   serverTime: now.toISOString(),

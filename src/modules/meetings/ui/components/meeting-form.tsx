@@ -121,6 +121,8 @@ export const MeetingForm = ({
       name: initialValues?.name ?? "",
       description: initialValues?.description ?? "",
       agentId: initialValues?.agentId ?? "",
+      isInstant: false,
+      passcode: "",
       scheduledAt: initialValues?.scheduledAt
         ? toZonedDatetimeLocalValue(initialValues.scheduledAt, timezone)
         : getDefaultScheduledAt(),
@@ -133,11 +135,17 @@ export const MeetingForm = ({
 
   const isEdit = !!initialValues?.id;
   const isPending = createMeeting.isPending || updateMeeting.isPending;
+  const isInstant = form.watch("isInstant");
 
   const onSubmit = (values: z.infer<typeof meetingsInsertSchema>) => {
-    const scheduledAt = zonedDateTimeToUtc(values.scheduledAt, values.timezone);
+    let scheduledAtUtc: Date | null = null;
+    if (values.isInstant) {
+      scheduledAtUtc = new Date();
+    } else if (values.scheduledAt) {
+      scheduledAtUtc = zonedDateTimeToUtc(values.scheduledAt, values.timezone);
+    }
 
-    if (!scheduledAt) {
+    if (!values.isInstant && !scheduledAtUtc) {
       form.setError("scheduledAt", {
         message: "Enter a valid meeting date and time.",
       });
@@ -152,7 +160,8 @@ export const MeetingForm = ({
     const payload = {
       ...values,
       description: values.description?.trim() ? values.description.trim() : null,
-      scheduledAt: scheduledAt.toISOString(),
+      passcode: values.passcode?.trim() || undefined,
+      scheduledAt: scheduledAtUtc ? scheduledAtUtc.toISOString() : undefined,
       participants,
     };
 
@@ -226,20 +235,47 @@ export const MeetingForm = ({
             )}
           />
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          {!isEdit && (
             <FormField
-              name="scheduledAt"
+              name="isInstant"
               control={form.control}
               render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Date and time</FormLabel>
+                <FormItem className="flex items-center justify-between rounded-lg border p-3">
+                  <div className="space-y-0.5">
+                    <FormLabel className="text-base font-semibold">Instant Meeting</FormLabel>
+                    <FormDescription>
+                      Start the meeting immediately. You will be able to join right away.
+                    </FormDescription>
+                  </div>
                   <FormControl>
-                    <Input type="datetime-local" {...field} />
+                    <input
+                      type="checkbox"
+                      checked={field.value}
+                      onChange={field.onChange}
+                      className="size-5 rounded border-gray-300 accent-emerald-600"
+                    />
                   </FormControl>
-                  <FormMessage />
                 </FormItem>
               )}
             />
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            {!isInstant && (
+              <FormField
+                name="scheduledAt"
+                control={form.control}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Date and time</FormLabel>
+                    <FormControl>
+                      <Input type="datetime-local" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
             <FormField
               name="durationMinutes"
@@ -259,6 +295,27 @@ export const MeetingForm = ({
                       }
                     />
                   </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              name="passcode"
+              control={form.control}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Passcode (optional)</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      placeholder="Auto-generated if left empty"
+                      maxLength={20}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Leave blank to auto-generate a secure 6-digit passcode.
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

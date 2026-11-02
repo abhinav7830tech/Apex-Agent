@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { verifyPasscode } from "@/lib/passcode";
 import { assertGuestJoinPolicy } from "./guest-access-policy";
 import { callMemberUpdates } from "./stream-call-members";
 
@@ -16,6 +17,7 @@ export type GuestAccessContext = {
   meeting: {
     id: string;
     userId: string;
+    passcodeHash?: string | null;
   };
   state: "joinable" | "waiting";
 };
@@ -64,6 +66,7 @@ export const createGuestAccessOperations = <
   getInviteId,
   markInviteRevoked,
   revokeStreamUsers,
+  recordParticipantJoin,
   now = () => new Date(),
 }: {
   enforceRateLimit: (scope: RateLimitScope) => Promise<void>;
@@ -88,6 +91,13 @@ export const createGuestAccessOperations = <
   getInviteId: (meetingId: string, inviteId: string) => Promise<string | null>;
   markInviteRevoked: (meetingId: string, inviteId: string, revokedAt: Date) => Promise<void>;
   revokeStreamUsers: (inviteIds: string[], meetingId: string) => Promise<unknown>;
+  recordParticipantJoin?: (input: {
+    meetingId: string;
+    userId?: string | null;
+    guestId?: string | null;
+    name: string;
+    role: string;
+  }) => Promise<void>;
   now?: () => Date;
 }) => ({
   async validateInvite(input: { meetingId: string; token: string }) {
@@ -109,11 +119,24 @@ export const createGuestAccessOperations = <
     meetingId: string;
     token: string;
     displayName?: string;
+    passcode?: string;
   }) {
     await enforceRateLimit("join");
     const context = await loadInviteContext(input);
     const session = await getSession();
     assertGuestJoinPolicy(context, Boolean(session));
+
+    if (context.meeting.passcodeHash) {
+      const isHost = session?.id === context.meeting.userId;
+      if (!isHost) {
+        if (!verifyPasscode(input.passcode ?? "", context.meeting.passcodeHash)) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid meeting passcode. Please check the passcode and try again.",
+          });
+        }
+      }
+    }
 
     const identity = await createGuestIdentity({
       meetingId: context.meeting.id,
@@ -140,6 +163,16 @@ export const createGuestAccessOperations = <
       validity_in_seconds: validityInSeconds,
     });
     await incrementInviteUse(context.invite.id, now());
+
+    if (recordParticipantJoin) {
+      await recordParticipantJoin({
+        meetingId: context.meeting.id,
+        userId: session?.id ?? null,
+        guestId: identity.guestRecordId ?? null,
+        name: identity.userName,
+        role: "participant",
+      });
+    }
 
     return {
       ...identity,

@@ -1,16 +1,24 @@
 import { db } from "@/db";
-import { agents, meetings, notifications, transcriptSegments, user } from "@/db/schema";
+import {
+  agents,
+  meetingGuests,
+  meetingParticipants,
+  meetings,
+  notifications,
+  transcriptSegments,
+  user,
+} from "@/db/schema";
 import { inngest } from "@/inngest/client";
 import type {
   MeetingActionItem,
   MeetingAiAnalysis,
   MeetingHighlight,
-  StreamTranscriptItem,
 } from "@/modules/meetings/types";
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import { z } from "zod";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
 import { escapeHtml, isEmailConfigured, sendEmail } from "@/lib/resend";
+import { queueExpiredReservationReviews, reconcileUsageCounters, reviewExpiredReservations } from "@/modules/billing/server/reconciliation";
 
 type NormalizedTranscriptItem = {
   speakerId: string;
@@ -20,24 +28,43 @@ type NormalizedTranscriptItem = {
   endMs: number;
 };
 
-const normalizeTranscriptItems = (raw: unknown): StreamTranscriptItem[] => {
+
+const normalizeTranscriptItems = (raw: unknown): NormalizedTranscriptItem[] => {
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
   if (!Array.isArray(raw)) return [];
 
   return raw
-    .map((item) => item as Partial<StreamTranscriptItem>)
+    .filter(
+      (item): item is Record<string, unknown> =>
+        typeof item === "object" && item !== null,
+    )
     .filter(
       (item) =>
-        typeof item?.text === "string" &&
+        typeof item.text === "string" &&
         item.text.trim().length > 0 &&
-        typeof item?.speaker_id === "string",
+        typeof (item.speakerId ?? item.speaker_id) === "string",
     )
-    .map((item) => ({
-      speaker_id: String(item.speaker_id),
-      type: String(item.type ?? "speech"),
-      text: String(item.text).trim(),
-      start_ts: Number(item.start_ts ?? 0),
-      stop_ts: Number(item.stop_ts ?? item.end_ts ?? item.shop_ts ?? 0),
-    }));
+    .map((item) => {
+      const startMs = Number(item.startMs ?? item.start_ts ?? 0);
+      const endMs = Number(
+        item.endMs ?? item.stop_ts ?? item.end_ts ?? startMs,
+      );
+
+      return {
+        speakerId: String(item.speakerId ?? item.speaker_id),
+        speakerName: String(item.speakerName ?? "Unknown").trim(),
+        text: String(item.text).trim(),
+        startMs: Math.max(0, Math.round(startMs)),
+        endMs: Math.max(0, Math.round(endMs)),
+      };
+    });
 };
 
 const parseTranscript = (raw: string): NormalizedTranscriptItem[] => {
@@ -48,6 +75,10 @@ const parseTranscript = (raw: string): NormalizedTranscriptItem[] => {
 
   try {
     parsed = JSON.parse(trimmed);
+
+    if (typeof parsed === "string") {
+      parsed = JSON.parse(parsed);
+    }
   } catch {
     const lines = trimmed
       .split(/\r?\n/)
@@ -55,28 +86,31 @@ const parseTranscript = (raw: string): NormalizedTranscriptItem[] => {
       .filter(Boolean);
 
     const objects: unknown[] = [];
+
     for (const line of lines) {
       try {
-        objects.push(JSON.parse(line));
+        let item: unknown = JSON.parse(line);
+
+        if (typeof item === "string") {
+          item = JSON.parse(item);
+        }
+
+        if (Array.isArray(item)) {
+          objects.push(...item);
+        } else {
+          objects.push(item);
+        }
       } catch {
-        // Ignore non-JSON lines; a transcript may contain headers.
+        // Ignore non-JSON lines.
       }
     }
+
     parsed = objects;
   }
 
-  return normalizeTranscriptItems(parsed).map((item) => {
-    const startMs = Math.max(0, Math.round(item.start_ts || 0));
-    const endMs = Math.max(startMs, Math.round(item.stop_ts || startMs));
-    return {
-      speakerId: item.speaker_id,
-      speakerName: "Unknown",
-      text: item.text,
-      startMs,
-      endMs,
-    };
-  });
+  return normalizeTranscriptItems(parsed);
 };
+
 
 const formatTimestamp = (ms: number) => {
   const totalSeconds = Math.floor(ms / 1000);
@@ -96,11 +130,11 @@ const toStringArray = (value: unknown): string[] => {
       const record = item as Record<string, unknown>;
       return String(
         record.title ??
-          record.topic ??
-          record.question ??
-          record.recommendation ??
-          record.description ??
-          "",
+        record.topic ??
+        record.question ??
+        record.recommendation ??
+        record.description ??
+        "",
       ).trim();
     })
     .filter(Boolean);
@@ -328,8 +362,8 @@ const buildSummaryEmail = (input: {
       : "",
     input.actionItems.length
       ? `Action items:\n- ${input.actionItems
-          .map((item) => item.task)
-          .join("\n- ")}`
+        .map((item) => item.task)
+        .join("\n- ")}`
       : "",
     "",
     `View full summary: ${meetingUrl}`,
@@ -534,9 +568,36 @@ export const meetingsProcessing = inngest.createFunction(
             .from(agents)
             .where(inArray(agents.id, speakerIds));
 
+          const guestSpeakers = await db
+            .select({ id: meetingGuests.id, name: meetingGuests.displayName })
+            .from(meetingGuests)
+            .where(inArray(meetingGuests.id, speakerIds));
+
+          const participantSpeakers = await db
+            .select({
+              guestId: meetingParticipants.guestId,
+              name: meetingParticipants.name,
+            })
+            .from(meetingParticipants)
+            .where(
+              and(
+                eq(meetingParticipants.meetingId, meetingId),
+                isNotNull(meetingParticipants.guestId),
+              ),
+            );
+
           const speakerMap = new Map<string, string>();
-          for (const speaker of [...userSpeakers, ...agentSpeakers]) {
+          for (const speaker of [
+            ...userSpeakers,
+            ...agentSpeakers,
+            ...guestSpeakers,
+          ]) {
             speakerMap.set(speaker.id, speaker.name);
+          }
+          for (const participant of participantSpeakers) {
+            if (participant.guestId) {
+              speakerMap.set(participant.guestId, participant.name);
+            }
           }
 
           return parsedTranscript.map((item) => ({
@@ -829,5 +890,39 @@ export const meetingReminders = inngest.createFunction(
     });
 
     return result;
+  },
+);
+
+export const billingReservationReconciliation = inngest.createFunction(
+  {
+    id: "billing-reservation-reconciliation",
+    retries: 5,
+    concurrency: { limit: 1 },
+  },
+  { cron: "*/5 * * * *" },
+  async ({ step }) => {
+    const queued = await step.run("queue-expired-reservations", queueExpiredReservationReviews);
+    const reviewed = await step.run("review-expired-reservations", reviewExpiredReservations);
+    console.info("billing_reservation_reconciliation_complete", {
+      queued,
+      examined: reviewed.examined,
+      updated: reviewed.updated,
+      autoReleased: 0,
+    });
+    return { queued, ...reviewed, autoReleased: 0 };
+  },
+);
+
+export const billingUsageReconciliation = inngest.createFunction(
+  {
+    id: "billing-usage-reconciliation",
+    retries: 5,
+    concurrency: { limit: 1 },
+  },
+  { cron: "17 2 * * *" },
+  async ({ step }) => {
+    const summary = await step.run("reconcile-usage-counters", reconcileUsageCounters);
+    console.info("billing_usage_reconciliation_complete", summary);
+    return summary;
   },
 );

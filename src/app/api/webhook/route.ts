@@ -13,6 +13,8 @@ import { streamVideo } from "@/lib/stream-video";
 import { inngest } from "@/inngest/client";
 import { isOpenAIConfigured } from "@/lib/openai";
 import { eq } from "drizzle-orm";
+import { billingStore } from "@/modules/billing/server/store";
+import { commitVerifiedStreamStart, extractStreamStartEvidence } from "@/modules/meetings/server/stream-start-evidence";
 
 const getMeetingIdFromCid = (callCid: string | undefined) =>
   callCid?.split(":").pop();
@@ -46,8 +48,8 @@ export async function POST(req: NextRequest) {
   let isSignatureValid = false;
   try {
     isSignatureValid = streamVideo.verifyWebhook(body, signature);
-  } catch (error) {
-    console.error("Stream webhook signature verification failed", error);
+  } catch {
+    console.error("stream_webhook_signature_verification_failed");
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
@@ -67,6 +69,7 @@ export async function POST(req: NextRequest) {
 
   if (eventType === "call.session_started") {
     const event = payload as unknown as CallSessionStartedEvent;
+    const evidence = extractStreamStartEvidence(payload);
     const meetingId = event.call.custom?.meetingId;
 
     if (!meetingId) {
@@ -79,8 +82,27 @@ export async function POST(req: NextRequest) {
       .where(eq(meetings.id, meetingId));
 
     if (!existingMeeting) {
-      console.error(`Stream webhook: meeting ${meetingId} not found`);
+      console.error("stream_webhook_meeting_not_found");
       return NextResponse.json({ status: "ignored" });
+    }
+
+    // The request signature was verified above. Bill only when Stream supplies
+    // its nested session start timestamp and stable call/session identity.
+    if (evidence) {
+      try {
+        const result = await commitVerifiedStreamStart(
+          isSignatureValid,
+          payload,
+          (id, eventId, startedAt) => billingStore.commitMeetingStart(id, eventId, startedAt),
+        );
+        if (result === "operation_failed") console.error("billing_stream_start_commit_unavailable");
+      } catch {
+        // Billing SQL grants/functions may be absent during staged rollout.
+        // Preserve the established meeting lifecycle and surface a safe signal.
+        console.error("billing_stream_start_commit_failed");
+      }
+    } else {
+      console.info("billing_stream_start_evidence_untrusted");
     }
 
     if (

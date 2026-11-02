@@ -17,7 +17,12 @@ export const meetingsInsertSchema = z.object({
   agentId: z.string().min(1, { message: "An AI agent is required" }),
   scheduledAt: z
     .string()
-    .min(1, { message: "Meeting date and time is required" }),
+    .optional(),
+  isInstant: z.boolean().optional(),
+  passcode: z
+    .string()
+    .trim()
+    .optional(),
   durationMinutes: z.coerce
     .number()
     .int()

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { PhoneOff, Users } from "lucide-react";
+import { PhoneOff, ShieldCheck, Users } from "lucide-react";
 import {
   CallControls,
   CallParticipantsList,
@@ -15,18 +15,36 @@ import { Button } from "@/components/ui/button";
 import { LiveTranscription } from "./live-transcription";
 
 interface Props {
+  meetingId: string;
   onLeave: () => void;
   onEnd: () => void;
   isEnding: boolean;
   meetingName: string;
 }
 
+const useMeetingDuration = () => {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const hrs = Math.floor(mins / 60);
+  if (hrs > 0) {
+    return `${hrs}:${String(mins % 60).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+};
+
 export const CallActive = ({
+  meetingId,
   onLeave,
   onEnd,
   isEnding,
   meetingName,
 }: Props) => {
+  const duration = useMeetingDuration();
   const { isListening, transcripts, toggleListening } = useSpeechToText();
   const { useParticipantCount } = useCallStateHooks();
   const [showParticipants, setShowParticipants] = useState(false);
@@ -47,7 +65,19 @@ export const CallActive = ({
             className="rounded-full"
           />
         </Link>
-        <h4 className="text-sm font-semibold">{meetingName}</h4>
+        <div className="flex flex-col">
+          <div className="flex items-center gap-1.5">
+            <h4 className="text-sm font-semibold">{meetingName}</h4>
+            <span className="flex items-center gap-1 text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-medium">
+              <ShieldCheck className="size-3" /> Host
+            </span>
+          </div>
+          <span className="text-[11px] text-white/60 font-mono">ID: {meetingId}</span>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 pl-2 border-l border-white/20 text-xs text-emerald-400 font-mono">
+          <span className="size-2 rounded-full bg-red-500 animate-pulse" />
+          {duration}
+        </div>
       </div>
       <div className="absolute top-4 right-4 z-20">
         <Button

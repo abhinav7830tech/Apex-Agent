@@ -1,57 +1,34 @@
 import { auth } from "@/lib/auth";
+import { createBillingStore } from "@/modules/billing/server/store-instance";
+import { getBillingConfiguration, BillingConfigurationError, BillingRequestError } from "@/modules/billing/server/config";
+import { createCheckoutOperation } from "@/modules/billing/server/operations";
+import { createStripeGateway } from "@/modules/billing/server/stripe-gateway";
+import { NextResponse, type NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { NextResponse } from "next/server";
-import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder", {
-    apiVersion: "2026-01-28.clover",
-    typescript: true,
-});
+export async function POST(request: NextRequest) {
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user) return NextResponse.json({ error: { code: "UNAUTHORIZED", message: "Sign in to continue." } }, { status: 401 });
 
-export async function POST() {
-    try {
-        if (!process.env.STRIPE_SECRET_KEY) {
-            console.error("[CHECKOUT_ERROR] STRIPE_SECRET_KEY is missing. Did you restart the server after updating .env?");
-            return new NextResponse("Server Configuration Error: Missing Stripe Key", { status: 500 });
-        }
-
-        const session = await auth.api.getSession({
-            headers: await headers()
-        });
-
-        if (!session || !session.user) {
-            return new NextResponse("Unauthorized", { status: 401 });
-        }
-
-        const checkoutSession = await stripe.checkout.sessions.create({
-            mode: "subscription",
-            payment_method_types: ["card"],
-            line_items: [
-                {
-                    price_data: {
-                        currency: "usd",
-                        product_data: {
-                            name: "Apex-Agents Pro Plan",
-                            description: "Unlimited agents, meetings, and advanced analytics.",
-                        },
-                        unit_amount: 1900, // $19.00
-                        recurring: {
-                            interval: "month",
-                        },
-                    },
-                    quantity: 1,
-                },
-            ],
-            metadata: {
-                userId: session.user.id,
-            },
-            success_url: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/upgrade?success=true`,
-            cancel_url: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/upgrade?canceled=true`,
-        });
-
-        return NextResponse.json({ url: checkoutSession.url });
-    } catch (error) {
-        console.error("[STRIPE_ERROR]", error);
-        return new NextResponse("Internal Error", { status: 500 });
+  try {
+    const body = await request.json().catch(() => ({})) as { plan?: unknown };
+    const configuration = getBillingConfiguration();
+    const result = await createCheckoutOperation({
+      user: { id: session.user.id, email: session.user.email, name: session.user.name },
+      plan: body.plan,
+      config: configuration,
+      store: createBillingStore(),
+      stripe: createStripeGateway(configuration),
+    });
+    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    if (error instanceof BillingConfigurationError) {
+      return NextResponse.json({ error: { code: error.code, message: error.message } }, { status: 503 });
     }
+    if (error instanceof BillingRequestError) {
+      return NextResponse.json({ error: { code: error.code, message: error.message } }, { status: error.status });
+    }
+    console.error("billing_checkout_failed");
+    return NextResponse.json({ error: { code: "CHECKOUT_FAILED", message: "Checkout could not be started. Try again later." } }, { status: 500 });
+  }
 }

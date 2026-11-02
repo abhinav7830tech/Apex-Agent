@@ -19,6 +19,7 @@ export type GuestInviteContextRow = {
     scheduledAt: Date | null;
     endsAt: Date | null;
     durationMinutes: number;
+    passcodeHash?: string | null;
   };
   hostName: string;
   agentName: string;

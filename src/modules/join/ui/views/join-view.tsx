@@ -101,7 +101,9 @@ export const JoinView = ({ meetingId }: Props) => {
 
   const [stage, setStage] = useState<Stage>("name");
   const [displayName, setDisplayName] = useState("");
+  const [passcode, setPasscode] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
+  const [passcodeError, setPasscodeError] = useState<string | null>(null);
   const [pendingName, setPendingName] = useState<string | null>(null);
   const [identity, setIdentity] = useState<GuestJoinResult | null>(null);
   const autoJoinStarted = useRef(false);
@@ -127,7 +129,7 @@ export const JoinView = ({ meetingId }: Props) => {
   const viewer = inviteQuery.data?.viewer;
   const countdown = useCountdown(meeting?.joinableAt ?? null);
 
-  const joinAsGuest = async (name: string) => {
+  const joinAsGuest = async (name: string, enteredPasscode?: string) => {
     if (!token) return;
 
     setPendingName(name);
@@ -144,6 +146,7 @@ export const JoinView = ({ meetingId }: Props) => {
         meetingId,
         token,
         displayName: name,
+        passcode: enteredPasscode ?? passcode.trim() ?? undefined,
       });
       setIdentity(result);
       setStage("lobby");
@@ -410,9 +413,15 @@ export const JoinView = ({ meetingId }: Props) => {
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
+
+              if (meeting?.requiresPasscode && !passcode.trim()) {
+                setPasscodeError("Passcode is required to join this meeting.");
+                return;
+              }
+
               if (session) {
                 setPendingName(session.user.name);
-                void joinAsGuest(session.user.name);
+                void joinAsGuest(session.user.name, passcode.trim());
                 return;
               }
 
@@ -423,8 +432,9 @@ export const JoinView = ({ meetingId }: Props) => {
               }
 
               setNameError(null);
+              setPasscodeError(null);
               setPendingName(name);
-              void joinAsGuest(name);
+              void joinAsGuest(name, passcode.trim());
             }}
           >
             <div className="space-y-2">
@@ -454,6 +464,30 @@ export const JoinView = ({ meetingId }: Props) => {
                 </>
               )}
             </div>
+
+            {meeting?.requiresPasscode && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="guest-passcode">Meeting Passcode</Label>
+                  <span className="text-xs text-muted-foreground">Required</span>
+                </div>
+                <Input
+                  id="guest-passcode"
+                  type="password"
+                  value={passcode}
+                  onChange={(event) => {
+                    setPasscode(event.target.value);
+                    setPasscodeError(null);
+                  }}
+                  placeholder="Enter 6-digit passcode"
+                  maxLength={32}
+                  autoComplete="off"
+                />
+                {passcodeError && (
+                  <p className="text-xs text-red-500">{passcodeError}</p>
+                )}
+              </div>
+            )}
 
             <Button
               type="submit"

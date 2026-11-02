@@ -1,11 +1,14 @@
 import { db } from "@/db";
 import {
   agents,
+  meetingGuests,
   meetingInvites,
+  meetingParticipants,
   meetings,
   notifications,
   transcriptSegments,
 } from "@/db/schema";
+import { generatePasscode, hashPasscode, verifyPasscode } from "@/lib/passcode";
 import {
   createTRPCRouter,
   protectedProcedure,
@@ -203,6 +206,19 @@ const guestAccessOperations = createGuestAccessOperations({
       );
   },
   revokeStreamUsers: revokeInviteStreamUsers,
+  recordParticipantJoin: async ({ meetingId, userId, guestId, name, role }) => {
+    try {
+      await db.insert(meetingParticipants).values({
+        meetingId,
+        userId: userId ?? null,
+        guestId: guestId ?? null,
+        name,
+        role: role || "participant",
+      });
+    } catch (error) {
+      console.error("[PARTICIPANTS] Failed to record participant join", error);
+    }
+  },
 });
 
 const ensureStreamCall = async (input: {
@@ -509,6 +525,7 @@ export const meetingsRouter = createTRPCRouter({
         meetingId: z.string().min(1),
         token: z.string().min(1),
         displayName: z.string().max(80).optional(),
+        passcode: z.string().optional(),
       }),
     )
     .mutation(({ input }) => guestAccessOperations.join(input)),
@@ -663,42 +680,61 @@ export const meetingsRouter = createTRPCRouter({
   create: protectedProcedure
     .input(meetingsInsertSchema)
     .mutation(async ({ input, ctx }) => {
-      const scheduledAt = parseScheduledAt(input.scheduledAt);
+      const isInstant = Boolean(input.isInstant);
+      let scheduledAt: Date;
+      let endsAt: Date;
+      let initialStatus = MeetingStatus.SCHEDULED;
 
-      if (!scheduledAt) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Enter a valid meeting date and time.",
+      if (isInstant) {
+        scheduledAt = new Date();
+        endsAt = getMeetingEnd(scheduledAt, input.durationMinutes);
+        initialStatus = MeetingStatus.ACTIVE;
+      } else {
+        const parsed = parseScheduledAt(input.scheduledAt ?? "");
+
+        if (!parsed) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Enter a valid meeting date and time.",
+          });
+        }
+
+        if (parsed.getTime() < Date.now() - 2 * 60 * 1000) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "A meeting cannot be scheduled in the past.",
+          });
+        }
+
+        scheduledAt = parsed;
+        endsAt = getMeetingEnd(scheduledAt, input.durationMinutes);
+        await assertNoOverlap({
+          userId: ctx.auth.user.id,
+          scheduledAt,
+          endsAt,
         });
       }
 
-      if (scheduledAt.getTime() < Date.now() - 2 * 60 * 1000) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "A meeting cannot be scheduled in the past.",
-        });
-      }
-
-      const endsAt = getMeetingEnd(scheduledAt, input.durationMinutes);
       const agent = await ensureAgentOwnership(ctx.auth.user.id, input.agentId);
-      await assertNoOverlap({
-        userId: ctx.auth.user.id,
-        scheduledAt,
-        endsAt,
-      });
-
       const meetingId = nanoid();
-      return createMeetingOperation({
+
+      const rawPasscode = input.passcode?.trim() || generatePasscode();
+      const passcodeHash = hashPasscode(rawPasscode);
+
+      const createdMeetingResult = await createMeetingOperation({
         persistMeeting: async () => {
+          const { isInstant: _, passcode: __, ...meetingValues } = input;
           const [createdMeeting] = await db
             .insert(meetings)
             .values({
-              ...input,
+              ...meetingValues,
               id: meetingId,
               scheduledAt,
               endsAt,
+              passcodeHash,
               streamCallId: meetingId,
-              status: MeetingStatus.SCHEDULED,
+              status: initialStatus,
+              startedAt: isInstant ? scheduledAt : null,
               userId: ctx.auth.user.id,
             })
             .returning();
@@ -715,11 +751,46 @@ export const meetingsRouter = createTRPCRouter({
           createNotification({
             userId: createdMeeting.userId,
             type: "meeting_reminder",
-            title: "Meeting Scheduled",
-            message: `Your meeting "${createdMeeting.name}" has been scheduled successfully.`,
+            title: isInstant ? "Instant Meeting Started" : "Meeting Scheduled",
+            message: isInstant
+              ? `Your meeting "${createdMeeting.name}" is live now.`
+              : `Your meeting "${createdMeeting.name}" has been scheduled successfully.`,
             meetingId: createdMeeting.id,
           }),
       });
+
+      // Automatically pre-create an active invitation link for seamless sharing
+      let inviteUrl = "";
+      let inviteToken = "";
+      try {
+        const baseUrl = getRequiredAppBaseUrl();
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const [invite] = await db
+          .insert(meetingInvites)
+          .values({
+            meetingId: createdMeetingResult.id,
+            createdBy: ctx.auth.user.id,
+            expiresAt,
+          })
+          .returning();
+        if (invite) {
+          inviteToken = invite.id;
+          inviteUrl = buildMeetingInviteUrl({
+            meetingId: createdMeetingResult.id,
+            token: invite.id,
+            baseUrl,
+          });
+        }
+      } catch (error) {
+        console.warn("[MEETING_CREATE] Could not generate invite link at creation:", error);
+      }
+
+      return {
+        ...createdMeetingResult,
+        passcode: rawPasscode,
+        inviteUrl,
+        inviteToken,
+      };
     }),
 
   getOne: protectedProcedure
@@ -743,7 +814,17 @@ export const meetingsRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
       }
 
-      return existingMeeting;
+      const participants = await db
+        .select()
+        .from(meetingParticipants)
+        .where(eq(meetingParticipants.meetingId, input.id))
+        .orderBy(asc(meetingParticipants.joinedAt));
+
+      return {
+        ...existingMeeting,
+        hasPasscode: Boolean(existingMeeting.passcodeHash),
+        participantRecords: participants,
+      };
     }),
 
   getTranscript: protectedProcedure
@@ -903,6 +984,36 @@ export const meetingsRouter = createTRPCRouter({
         meetingId: updatedMeeting.id,
       });
 
+      // Mark active participants as left
+      await db
+        .update(meetingParticipants)
+        .set({ leftAt: new Date() })
+        .where(
+          and(
+            eq(meetingParticipants.meetingId, meeting.id),
+            isNull(meetingParticipants.leftAt),
+          ),
+        )
+        .catch(() => undefined);
+
+      // Check if Stream has completed transcriptions ready
+      try {
+        const call = streamVideo.video.call("default", meeting.id);
+        const transcriptions = await call.listTranscriptions();
+        if (transcriptions?.transcriptions?.length) {
+          const latest = transcriptions.transcriptions[transcriptions.transcriptions.length - 1];
+          if (latest?.url) {
+            updatedMeeting.transcriptUrl = latest.url;
+            await db
+              .update(meetings)
+              .set({ transcriptUrl: latest.url })
+              .where(eq(meetings.id, meeting.id));
+          }
+        }
+      } catch {
+        // Stream listTranscriptions best-effort
+      }
+
       // If Stream already delivered the transcript while the call was active,
       // transcription_ready intentionally deferred processing until the call
       // ended. Trigger it now so manually-ended meetings do not stay stuck in
@@ -920,6 +1031,284 @@ export const meetingsRouter = createTRPCRouter({
       }
 
       return { meeting: updatedMeeting, streamEnded };
+    }),
+
+  start: protectedProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+          and(eq(meetings.id, input.id), eq(meetings.userId, ctx.auth.user.id)),
+        );
+
+      if (!meeting) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+      }
+
+      if (
+        meeting.status === MeetingStatus.CANCELLED ||
+        meeting.status === MeetingStatus.COMPLETED
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot start a meeting that has ended or been cancelled.",
+        });
+      }
+
+      const startedAt = meeting.startedAt ?? new Date();
+
+      const [updatedMeeting] = await db
+        .update(meetings)
+        .set({
+          status: MeetingStatus.ACTIVE,
+          startedAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(meetings.id, input.id))
+        .returning();
+
+      // Record host as participant
+      await db
+        .insert(meetingParticipants)
+        .values({
+          meetingId: meeting.id,
+          userId: ctx.auth.user.id,
+          name: ctx.auth.user.name,
+          email: ctx.auth.user.email,
+          role: "host",
+          joinedAt: new Date(),
+        })
+        .catch(() => undefined);
+
+      // Connect AI participant if OpenAI is configured
+      if (isOpenAIConfigured()) {
+        try {
+          const [agent] = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, meeting.agentId));
+
+          if (agent) {
+            const call = streamVideo.video.call("default", meeting.id);
+            const realtimeClient = await streamVideo.video.connectOpenAi({
+              call,
+              openAiApiKey: process.env.OPENAI_API_KEY!,
+              agentUserId: agent.id,
+            });
+            await realtimeClient.updateSession({
+              instructions: agent.instructions,
+            });
+            await db
+              .insert(meetingParticipants)
+              .values({
+                meetingId: meeting.id,
+                name: agent.name,
+                role: "agent",
+                joinedAt: new Date(),
+              })
+              .catch(() => undefined);
+          }
+        } catch (error) {
+          console.error("[START] Failed to connect AI agent to call", error);
+        }
+      }
+
+      await createNotification({
+        userId: updatedMeeting.userId,
+        type: "meeting_started",
+        title: "Meeting Started",
+        message: `"${updatedMeeting.name}" is now live.`,
+        meetingId: updatedMeeting.id,
+      });
+
+      return updatedMeeting;
+    }),
+
+  joinByMeetingId: publicProcedure
+    .input(
+      z.object({
+        meetingId: z
+          .string()
+          .trim()
+          .min(1, { message: "Meeting ID is required" }),
+        passcode: z
+          .string()
+          .trim()
+          .min(1, { message: "Passcode is required" }),
+        displayName: z
+          .string()
+          .trim()
+          .min(2, { message: "Display name must have at least 2 characters" })
+          .max(80),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(eq(meetings.id, input.meetingId));
+
+      if (!meeting) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Meeting not found. Please verify the Meeting ID.",
+        });
+      }
+
+      if (meeting.status === MeetingStatus.CANCELLED) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This meeting has been cancelled by the host.",
+        });
+      }
+      if (
+        meeting.status === MeetingStatus.COMPLETED ||
+        meeting.status === MeetingStatus.PROCESSING
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This meeting has already ended.",
+        });
+      }
+      if (meeting.status === MeetingStatus.FAILED) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "This meeting could not be completed and is no longer joinable.",
+        });
+      }
+
+      if (meeting.passcodeHash) {
+        const isValid = verifyPasscode(input.passcode, meeting.passcodeHash);
+        if (!isValid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message:
+              "Invalid meeting passcode. Please check the passcode and try again.",
+          });
+        }
+      }
+
+      // Find or create an active invite
+      const now = new Date();
+      let [invite] = await db
+        .select()
+        .from(meetingInvites)
+        .where(
+          and(
+            eq(meetingInvites.meetingId, meeting.id),
+            isNull(meetingInvites.revokedAt),
+            gt(meetingInvites.expiresAt, now),
+          ),
+        )
+        .orderBy(desc(meetingInvites.createdAt))
+        .limit(1);
+
+      if (!invite) {
+        const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const [newInvite] = await db
+          .insert(meetingInvites)
+          .values({
+            meetingId: meeting.id,
+            createdBy: meeting.userId,
+            expiresAt,
+          })
+          .returning();
+        invite = newInvite;
+      }
+
+      const joinResult = await guestAccessOperations.join({
+        meetingId: meeting.id,
+        token: invite.id,
+        displayName: input.displayName,
+        passcode: input.passcode,
+      });
+
+      return {
+        ...joinResult,
+        inviteToken: invite.id,
+      };
+    }),
+
+  generateNewPasscode: protectedProcedure
+    .input(z.object({ meetingId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+          and(
+            eq(meetings.id, input.meetingId),
+            eq(meetings.userId, ctx.auth.user.id),
+          ),
+        );
+
+      if (!meeting) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+      }
+
+      const passcode = generatePasscode();
+      const passcodeHash = hashPasscode(passcode);
+
+      await db
+        .update(meetings)
+        .set({ passcodeHash, updatedAt: new Date() })
+        .where(eq(meetings.id, input.meetingId));
+
+      return { passcode };
+    }),
+
+  submitLiveTranscript: protectedProcedure
+    .input(
+      z.object({
+        meetingId: z.string().min(1),
+        segments: z.array(
+          z.object({
+            text: z.string().trim().min(1),
+            speakerId: z.string().optional(),
+            speakerName: z.string().optional(),
+            startMs: z.number().optional(),
+            endMs: z.number().optional(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [meeting] = await db
+        .select()
+        .from(meetings)
+        .where(
+          and(
+            eq(meetings.id, input.meetingId),
+            eq(meetings.userId, ctx.auth.user.id),
+          ),
+        );
+
+      if (!meeting) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
+      }
+
+      if (input.segments.length > 0 && !meeting.transcript) {
+        const normalized = input.segments.map((seg, idx) => ({
+          speakerId: seg.speakerId || ctx.auth.user.id,
+          speakerName: seg.speakerName || ctx.auth.user.name,
+          text: seg.text,
+          startMs: seg.startMs ?? idx * 5000,
+          endMs: seg.endMs ?? (idx + 1) * 5000,
+        }));
+
+        await db
+          .update(meetings)
+          .set({
+            transcript: JSON.stringify(normalized),
+            updatedAt: new Date(),
+          })
+          .where(eq(meetings.id, input.meetingId));
+      }
+
+      return { success: true };
     }),
 
   retryAnalysis: protectedProcedure

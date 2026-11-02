@@ -16,6 +16,7 @@ interface Props {
 export const CallUI = ({ meetingId, meetingName }: Props) => {
   const call = useCall();
   const trpc = useTRPC();
+  const startMeeting = useMutation(trpc.meetings.start.mutationOptions());
   const endMeeting = useMutation(trpc.meetings.end.mutationOptions());
   const [show, setShow] = useState<"lobby" | "call" | "ended">("lobby");
   const [endedForAll, setEndedForAll] = useState(false);
@@ -26,6 +27,9 @@ export const CallUI = ({ meetingId, meetingName }: Props) => {
     try {
       await call.join();
       setShow("call");
+      void startMeeting.mutateAsync({ id: meetingId }).catch((error) => {
+        console.warn("Could not transition meeting to active:", error);
+      });
     } catch (error) {
       console.error("Failed to join call", error);
       toast.error("Could not join the call. Please refresh and try again.");
@@ -71,6 +75,7 @@ export const CallUI = ({ meetingId, meetingName }: Props) => {
       {show === "lobby" && <CallLobby onJoin={handleJoin} />}
       {show === "call" && (
         <CallActive
+          meetingId={meetingId}
           onLeave={handleLeave}
           onEnd={handleEndForAll}
           isEnding={endMeeting.isPending}

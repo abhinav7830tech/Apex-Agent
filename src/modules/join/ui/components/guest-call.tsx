@@ -350,6 +350,21 @@ const GuestLobby = ({
   );
 };
 
+const useMeetingDuration = () => {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const hrs = Math.floor(mins / 60);
+  if (hrs > 0) {
+    return `${hrs}:${String(mins % 60).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+};
+
 const GuestActive = ({
   meetingName,
   hostName,
@@ -359,6 +374,7 @@ const GuestActive = ({
   hostName: string;
   onLeave: () => void;
 }) => {
+  const duration = useMeetingDuration();
   const [showParticipants, setShowParticipants] = useState(false);
   const { useParticipantCount } = useCallStateHooks();
   const participantCount = useParticipantCount();
@@ -370,6 +386,10 @@ const GuestActive = ({
         <div className="leading-tight">
           <p className="text-sm font-semibold">{meetingName}</p>
           <p className="text-xs text-white/60">Host: {hostName}</p>
+        </div>
+        <div className="flex items-center gap-1.5 ml-2 pl-2 border-l border-white/20 text-xs text-emerald-400 font-mono">
+          <span className="size-2 rounded-full bg-red-500 animate-pulse" />
+          {duration}
         </div>
       </div>
 
