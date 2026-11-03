@@ -27,6 +27,7 @@ export const enforcePublicGuestRateLimit = async (
     const address = getTrustedClientIp(requestHeaders, {
       production: process.env.NODE_ENV === "production",
       trustedHeader: process.env.PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER,
+      vercel: process.env.VERCEL === "1",
     });
 
     const key = createHash("sha256")
@@ -59,6 +60,15 @@ export const enforcePublicGuestRateLimit = async (
           reason: error.message,
           configuredHeader:
             process.env.PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER ?? null,
+          vercelRuntime: process.env.VERCEL === "1",
+        }),
+      );
+    } else {
+      console.error(
+        "[SECURITY] Guest rate-limit storage unavailable",
+        JSON.stringify({
+          event: "public_rate_limit_storage_unavailable",
+          reason: error instanceof Error ? error.message : "Unknown error",
         }),
       );
     }

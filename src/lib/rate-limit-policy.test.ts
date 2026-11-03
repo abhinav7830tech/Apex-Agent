@@ -72,7 +72,63 @@ describe("public guest rate limit policy", () => {
     );
   });
 
-  it("accepts one valid Vercel address and rejects ambiguous or malformed headers", () => {
+  it("uses the Vercel ingress header automatically in production", () => {
+    assert.equal(
+      getTrustedClientIp(
+        new Headers({ "x-forwarded-for": "198.51.100.77" }),
+        { production: true, vercel: true },
+      ),
+      "198.51.100.77",
+    );
+    assert.equal(
+      getTrustedClientIp(
+        new Headers({
+          "x-forwarded-for": "2001:0db8:0:0:0:0:0:5",
+          "x-real-ip": "203.0.113.45",
+        }),
+        { production: true, vercel: true },
+      ),
+      "2001:db8::5",
+    );
+    assert.throws(
+      () => getTrustedClientIp(new Headers(), { production: true, vercel: true }),
+      ClientIdentityError,
+    );
+    assert.throws(
+      () =>
+        getTrustedClientIp(new Headers({ "x-forwarded-for": "not-an-ip" }), {
+          production: true,
+          vercel: true,
+        }),
+      ClientIdentityError,
+    );
+  });
+
+  it("prefers an explicitly configured header over platform auto-detection", () => {
+    const headers = new Headers({
+      "x-forwarded-for": "198.51.100.77",
+      "cf-connecting-ip": "203.0.113.9",
+    });
+    assert.equal(
+      getTrustedClientIp(headers, {
+        production: true,
+        vercel: true,
+        trustedHeader: "cf-connecting-ip",
+      }),
+      "203.0.113.9",
+    );
+    assert.throws(
+      () =>
+        getTrustedClientIp(headers, {
+          production: true,
+          vercel: true,
+          trustedHeader: "not a header name",
+        }),
+      ClientIdentityError,
+    );
+  });
+
+  it("accepts one valid trusted address and rejects ambiguous or malformed headers", () => {
     assert.equal(
       getTrustedClientIp(new Headers({ "x-forwarded-for": "2001:db8::5" }), {
         production: true,

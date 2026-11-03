@@ -24,28 +24,58 @@ export class RateLimitExceededError extends Error {
 type HeaderReader = { get(name: string): string | null };
 
 /**
- * Read only an explicitly configured trusted ingress header in production.
- * VERCEL=1 identifies the runtime but does not prove traffic reaches it directly.
+ * Vercel's edge network overwrites the forwarded address before the request
+ * reaches the function, so this header is only trusted when the runtime is
+ * verified as Vercel (`VERCEL=1`). Operators behind another ingress must set
+ * PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER to the single-value header that ingress
+ * overwrites.
+ *
+ * https://vercel.com/docs/headers/request-headers#x-forwarded-for
+ */
+export const VERCEL_TRUSTED_IP_HEADER = "x-forwarded-for";
+
+const LOCAL_DEVELOPMENT_HEADER = "x-forwarded-for";
+
+const resolveTrustedHeader = ({
+  production,
+  trustedHeader,
+  vercel,
+}: {
+  production: boolean;
+  trustedHeader?: string | null;
+  vercel?: boolean;
+}) => {
+  const configuredHeader = trustedHeader?.trim().toLowerCase();
+  if (configuredHeader) return configuredHeader;
+  if (!production) return LOCAL_DEVELOPMENT_HEADER;
+  return vercel ? VERCEL_TRUSTED_IP_HEADER : null;
+};
+
+/**
+ * Reads the client IP from the one header the current runtime is allowed to
+ * trust. A production runtime without either an explicit header or a verified
+ * Vercel platform fails closed instead of guessing a spoofable fallback.
  */
 export const getTrustedClientIp = (
   requestHeaders: HeaderReader,
   {
     production,
     trustedHeader,
-  }: { production: boolean; trustedHeader?: string | null },
+    vercel = false,
+  }: { production: boolean; trustedHeader?: string | null; vercel?: boolean },
 ) => {
-  const normalizedHeader = trustedHeader?.trim().toLowerCase();
-  const headerName = normalizedHeader || (production ? null : "x-forwarded-for");
+  const selectedHeader = resolveTrustedHeader({
+    production,
+    trustedHeader,
+    vercel,
+  });
 
-  if (production && !headerName) {
+  if (!selectedHeader) {
     throw new ClientIdentityError(
-      "Production must configure a trusted client IP header",
+      "Production must configure PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER or run on a verified Vercel deployment",
     );
   }
 
-  // Local development may use the framework's forwarded address, but never
-  // relies on it for a production deployment outside the verified proxy mode.
-  const selectedHeader = headerName ?? "x-forwarded-for";
   if (!/^[a-z0-9-]+$/.test(selectedHeader)) {
     throw new ClientIdentityError("Trusted client IP header name is invalid");
   }
@@ -54,7 +84,9 @@ export const getTrustedClientIp = (
   // Do not choose one element from a chain: its trust boundary is ambiguous.
   if (!rawAddress || rawAddress.includes(",") || isIP(rawAddress) === 0) {
     if (!production) return "127.0.0.1";
-    throw new ClientIdentityError();
+    throw new ClientIdentityError(
+      `Trusted client IP header "${selectedHeader}" is missing or contains an invalid address`,
+    );
   }
 
   if (isIP(rawAddress) === 6) {

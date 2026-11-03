@@ -35,3 +35,26 @@ Commands and results:
 - Stream behavior remains mocked. Invite revocation in the database blocks subsequent API access; it does not prove immediate revocation of a Stream token already issued. If Stream revocation fails, an already-issued token may remain valid for up to its configured 30-minute lifetime. There is no durable retry queue. A join already past its invite check may finish during a concurrent revocation.
 - Hostname validation is offline and does not resolve DNS. A configured public-looking hostname that resolves to an internal address is not detected.
 - No Phase 2 work has started.
+
+## Follow-up: guest invitation 503 incident
+
+The deployment guidance above was superseded after production guests received `SERVICE_UNAVAILABLE` from `meetings.getInvite`.
+
+Root causes found:
+
+1. `getTrustedClientIp` required `PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER` whenever `NODE_ENV=production`, even on a direct Vercel deployment. With the variable unset, every guest request failed before any database query.
+2. The shared `public_rate_limits` table backing the limiter did not exist in the connected Neon database. Migration `0004_shared_public_rate_limits.sql` had not been applied.
+3. Raw `Date` values interpolated directly into the limiter's SQL `CASE` were encoded with the process timezone, while the inserted column value was encoded as UTC. In a non-UTC runtime this made every window appear expired, resetting counters on each request and weakening rate limiting.
+
+Changes made:
+
+- `getTrustedClientIp` now treats `VERCEL=1` as a verified platform signal and automatically trusts Vercel's edge-overwritten `x-forwarded-for` header. Outside a verified Vercel runtime it still fails closed unless `PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER` names the ingress header. An explicit header always takes precedence.
+- Comma-separated or malformed forwarded addresses are still rejected; IPv6 spellings are still canonicalized.
+- The limiter encodes comparison timestamps with the column's Drizzle encoder (`sql.param`) in both increment and cleanup, so window arithmetic is timezone-independent.
+- Guest identity failures and limiter storage failures now emit distinct structured log events.
+
+Deployment notes:
+
+- `PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER` is optional on Vercel. Keep it unset unless the app runs behind a different ingress that overwrites a single-value client IP header. It is a plain configuration value, not a secret.
+- Migration `0004_shared_public_rate_limits.sql` must exist in every environment. It is non-destructive: it creates only `public_rate_limits` and its index.
+- Verify with `npx tsc --noEmit`, `npm run test:security`, and `npm run build` before deploying.

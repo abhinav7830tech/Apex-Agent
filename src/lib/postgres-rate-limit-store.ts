@@ -11,14 +11,24 @@ export const createPostgresRateLimitStore = (
   database: typeof productionDb,
 ): RateLimitStore => ({
   async increment({ key, now, windowMs }) {
+    // Raw Date parameters inside sql`` bypass the column's UTC encoder. Without
+    // sql.param, a non-UTC process timezone serializes the comparison
+    // timestamp differently from the inserted column value, making every
+    // window look expired and resetting the counter on each request.
+    const cutoff = sql.param(
+      new Date(now.getTime() - windowMs),
+      publicRateLimits.windowStartedAt,
+    );
+    const current = sql.param(now, publicRateLimits.windowStartedAt);
+
     const [row] = await database
       .insert(publicRateLimits)
       .values({ key, windowStartedAt: now, requestCount: 1 })
       .onConflictDoUpdate({
         target: publicRateLimits.key,
         set: {
-          windowStartedAt: sql`CASE WHEN ${publicRateLimits.windowStartedAt} <= ${new Date(now.getTime() - windowMs)} THEN ${now} ELSE ${publicRateLimits.windowStartedAt} END`,
-          requestCount: sql`CASE WHEN ${publicRateLimits.windowStartedAt} <= ${new Date(now.getTime() - windowMs)} THEN 1 ELSE ${publicRateLimits.requestCount} + 1 END`,
+          windowStartedAt: sql`CASE WHEN ${publicRateLimits.windowStartedAt} <= ${cutoff} THEN ${current} ELSE ${publicRateLimits.windowStartedAt} END`,
+          requestCount: sql`CASE WHEN ${publicRateLimits.windowStartedAt} <= ${cutoff} THEN 1 ELSE ${publicRateLimits.requestCount} + 1 END`,
         },
       })
       .returning({
@@ -32,19 +42,22 @@ export const createPostgresRateLimitStore = (
 
   async cleanupExpired({ cutoff, limit }) {
     // ctid bounds each deletion batch; rechecking expiry prevents deletion of
-    // a counter refreshed after the candidate scan.
+    // a counter refreshed after the candidate scan. Encode the cutoff exactly
+    // like the column so process timezone cannot widen the deletion window.
+    const encodedCutoff = sql.param(cutoff, publicRateLimits.windowStartedAt);
+
     await database.execute(sql`
       WITH expired AS (
         SELECT ctid
         FROM public_rate_limits
-        WHERE window_started_at < ${cutoff}
+        WHERE window_started_at < ${encodedCutoff}
         ORDER BY window_started_at
         LIMIT ${limit}
       )
       DELETE FROM public_rate_limits AS rate_limit
       USING expired
       WHERE rate_limit.ctid = expired.ctid
-        AND rate_limit.window_started_at < ${cutoff}
+        AND rate_limit.window_started_at < ${encodedCutoff}
     `);
   },
 });
