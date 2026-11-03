@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import { createHash } from "node:crypto";
@@ -22,10 +23,12 @@ export const enforcePublicGuestRateLimit = async (
 ) => {
   try {
     const requestHeaders = await headers();
+
     const address = getTrustedClientIp(requestHeaders, {
       production: process.env.NODE_ENV === "production",
       trustedHeader: process.env.PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER,
     });
+
     const key = createHash("sha256")
       .update(`${scope}:${address}`)
       .digest("hex");
@@ -43,13 +46,23 @@ export const enforcePublicGuestRateLimit = async (
         message: error.message,
       });
     }
-    if (error instanceof TRPCError) throw error;
+
+    if (error instanceof TRPCError) {
+      throw error;
+    }
+
     if (error instanceof ClientIdentityError) {
       console.error(
         "[SECURITY] Trusted client identity unavailable",
-        JSON.stringify({ event: "public_rate_limit_identity_unavailable" }),
+        JSON.stringify({
+          event: "public_rate_limit_identity_unavailable",
+          reason: error.message,
+          configuredHeader:
+            process.env.PUBLIC_RATE_LIMIT_TRUSTED_IP_HEADER ?? null,
+        }),
       );
     }
+
     // Missing/untrusted identity and storage failure both fail closed.
     throw new TRPCError({
       code: "SERVICE_UNAVAILABLE",
