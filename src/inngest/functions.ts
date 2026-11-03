@@ -9,108 +9,41 @@ import {
   user,
 } from "@/db/schema";
 import { inngest } from "@/inngest/client";
+import {
+  createMeetingProcessingEventId,
+  MEETING_PROCESSING_EVENT,
+} from "@/inngest/events";
 import type {
   MeetingActionItem,
   MeetingAiAnalysis,
   MeetingHighlight,
 } from "@/modules/meetings/types";
-import { and, eq, gte, inArray, isNotNull, isNull, lte } from "drizzle-orm";
+import { parseTranscript } from "@/modules/meetings/server/transcript-parsing";
+import {
+  lookupStreamTranscriptUrl,
+  TRANSCRIPT_POLL_DELAYS,
+} from "@/modules/meetings/server/transcript-resolution";
+import { isStreamConfigured, streamVideo } from "@/lib/stream-video";
+import { and, eq, gte, inArray, isNotNull, isNull, lt, lte } from "drizzle-orm";
 import { z } from "zod";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
 import { escapeHtml, isEmailConfigured, sendEmail } from "@/lib/resend";
 import { queueExpiredReservationReviews, reconcileUsageCounters, reviewExpiredReservations } from "@/modules/billing/server/reconciliation";
 
-type NormalizedTranscriptItem = {
-  speakerId: string;
-  speakerName: string;
-  text: string;
-  startMs: number;
-  endMs: number;
-};
-
-
-const normalizeTranscriptItems = (raw: unknown): NormalizedTranscriptItem[] => {
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return [];
-    }
+/**
+ * Looks up the latest transcript Stream produced for a call. Stream transcript
+ * egress finishes asynchronously after the call ends, so callers must poll.
+ */
+const lookupTranscriptForMeeting = async (meetingId: string) => {
+  if (!isStreamConfigured()) {
+    return {
+      status: "missing" as const,
+    };
   }
 
-  if (!Array.isArray(raw)) return [];
-
-  return raw
-    .filter(
-      (item): item is Record<string, unknown> =>
-        typeof item === "object" && item !== null,
-    )
-    .filter(
-      (item) =>
-        typeof item.text === "string" &&
-        item.text.trim().length > 0 &&
-        typeof (item.speakerId ?? item.speaker_id) === "string",
-    )
-    .map((item) => {
-      const startMs = Number(item.startMs ?? item.start_ts ?? 0);
-      const endMs = Number(
-        item.endMs ?? item.stop_ts ?? item.end_ts ?? startMs,
-      );
-
-      return {
-        speakerId: String(item.speakerId ?? item.speaker_id),
-        speakerName: String(item.speakerName ?? "Unknown").trim(),
-        text: String(item.text).trim(),
-        startMs: Math.max(0, Math.round(startMs)),
-        endMs: Math.max(0, Math.round(endMs)),
-      };
-    });
+  const call = streamVideo.video.call("default", meetingId);
+  return lookupStreamTranscriptUrl(() => call.listTranscriptions());
 };
-
-const parseTranscript = (raw: string): NormalizedTranscriptItem[] => {
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(trimmed);
-
-    if (typeof parsed === "string") {
-      parsed = JSON.parse(parsed);
-    }
-  } catch {
-    const lines = trimmed
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    const objects: unknown[] = [];
-
-    for (const line of lines) {
-      try {
-        let item: unknown = JSON.parse(line);
-
-        if (typeof item === "string") {
-          item = JSON.parse(item);
-        }
-
-        if (Array.isArray(item)) {
-          objects.push(...item);
-        } else {
-          objects.push(item);
-        }
-      } catch {
-        // Ignore non-JSON lines.
-      }
-    }
-
-    parsed = objects;
-  }
-
-  return normalizeTranscriptItems(parsed);
-};
-
 
 const formatTimestamp = (ms: number) => {
   const totalSeconds = Math.floor(ms / 1000);
@@ -469,9 +402,14 @@ export const meetingsProcessing = inngest.createFunction(
     retries: 3,
     concurrency: { limit: 1, key: "event.data.meetingId" },
   },
-  { event: "meetings/processing" },
+  { event: MEETING_PROCESSING_EVENT },
   async ({ event, step }) => {
     const meetingId = event.data.meetingId as string;
+
+    console.info("meeting_processing_started", {
+      meetingId,
+      hasEventTranscriptUrl: Boolean(event.data.transcriptUrl),
+    });
 
     try {
       const meeting = await step.run("load-meeting", async () => {
@@ -485,6 +423,10 @@ export const meetingsProcessing = inngest.createFunction(
       });
 
       if (meeting.status === "completed" && meeting.processedAt) {
+        console.info("meeting_processing_skipped", {
+          meetingId,
+          reason: "already-processed",
+        });
         return { skipped: true, reason: "already-processed" };
       }
 
@@ -499,29 +441,171 @@ export const meetingsProcessing = inngest.createFunction(
           .where(eq(meetings.id, meetingId));
       });
 
+      // Resolve a transcript URL without assuming it is ready the instant the
+      // call ends. Stream finalises transcript egress asynchronously, so poll
+      // with a bounded, durable schedule.
+      const resolved = await step.run("resolve-transcript-source", async () => {
+        if (meeting.transcript?.trim()) {
+          return { source: "stored" as const, transcriptUrl: null };
+        }
+
+        const initialUrl =
+          event.data.transcriptUrl ?? meeting.transcriptUrl ?? null;
+        if (initialUrl) {
+          return { source: "event" as const, transcriptUrl: initialUrl };
+        }
+
+        if (!isStreamConfigured()) {
+          return {
+            source: "unavailable" as const,
+            transcriptUrl: null,
+            reason: "Stream is not configured on the server",
+          };
+        }
+
+        const lookup = await lookupTranscriptForMeeting(meetingId);
+        if (lookup.status === "found") {
+          await db
+            .update(meetings)
+            .set({ transcriptUrl: lookup.url, updatedAt: new Date() })
+            .where(eq(meetings.id, meetingId));
+
+          return { source: "stream" as const, transcriptUrl: lookup.url };
+        }
+
+return {
+  source: "pending" as const,
+  transcriptUrl: null,
+  reason: "not-ready-yet",
+};
+      });
+
+      let transcriptUrl = resolved.transcriptUrl;
+
+      if (resolved.source === "pending") {
+        for (const [index, delay] of TRANSCRIPT_POLL_DELAYS.entries()) {
+          if (transcriptUrl) break;
+
+          await step.sleep(`wait-for-transcript-${index}`, delay);
+
+          const lookup = await step.run(
+            `resolve-transcript-poll-${index}`,
+
+            () => lookupTranscriptForMeeting(meetingId),
+          );
+if (lookup.status === "error") {
+  throw new Error(`Stream transcript polling failed: ${lookup.message}`);
+}
+          if (lookup.status === "found") {
+            transcriptUrl = lookup.url;
+            await step.run(`persist-transcript-url-${index}`, async () => {
+              await db
+                .update(meetings)
+                .set({ transcriptUrl: lookup.url, updatedAt: new Date() })
+                .where(eq(meetings.id, meetingId));
+            });
+          }
+        }
+      }
+
+      if (!meeting.transcript?.trim() && !transcriptUrl) {
+        const reason =
+          resolved.source === "unavailable"
+            ? "Stream is not configured on the server, so the transcript could not be downloaded."
+            : "No transcript appeared within the expected window. The call may have ended before transcription was enabled, or Stream transcription failed.";
+
+        await step.run("mark-transcript-unavailable", async () => {
+          await db
+            .update(meetings)
+            .set({
+              status: "failed",
+              analysisError: reason,
+              updatedAt: new Date(),
+            })
+            .where(eq(meetings.id, meetingId));
+
+          await db.insert(notifications).values({
+            userId: meeting.userId,
+            type: "meeting_failed",
+            title: "Transcript Not Available",
+            message: `Apex Agent could not find a transcript for "${meeting.name}". ${reason}`,
+            meetingId,
+          });
+        });
+
+        console.error("meeting_processing_transcript_unavailable", {
+          meetingId,
+          source: resolved.source,
+        });
+
+        return { skipped: true, reason: "transcript-unavailable" };
+      }
+
       const transcriptJson = await step.run("fetch-transcript", async () => {
         if (meeting.transcript?.trim()) {
           return meeting.transcript;
         }
 
-        const transcriptUrl = event.data.transcriptUrl ?? meeting.transcriptUrl;
         if (!transcriptUrl) {
           throw new Error(
             "No transcript URL or stored transcript is available for this meeting",
           );
         }
 
-        const response = await fetch(transcriptUrl, {
-          signal: AbortSignal.timeout(30000),
-        });
+        const download = async (url: string) => {
+          const response = await fetch(url, {
+            signal: AbortSignal.timeout(30000),
+          });
 
-        if (!response.ok) {
-          throw new Error(
-            `Transcript download failed with status ${response.status}`,
-          );
+          if (!response.ok) {
+            throw new Error(
+              `Transcript download failed with status ${response.status}`,
+            );
+          }
+
+          return response.text();
+        };
+
+        console.info("meeting_transcript_download_started", { meetingId });
+
+        try {
+          const body = await download(transcriptUrl);
+          console.info("meeting_transcript_download_completed", {
+            meetingId,
+            bytes: body.length,
+          });
+          return body;
+        } catch (error) {
+          // Signed Stream URLs can expire and the CDN can fail transiently.
+          // Try one fresh URL before letting Inngest retry the whole step.
+          if (!isStreamConfigured()) throw error;
+
+          console.error("meeting_transcript_download_failed", {
+            meetingId,
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+
+          const lookup = await lookupTranscriptForMeeting(meetingId);
+          if (lookup.status !== "found" || lookup.url === transcriptUrl) {
+            throw error;
+          }
+
+          const body = await download(lookup.url);
+          transcriptUrl = lookup.url;
+
+          await db
+            .update(meetings)
+            .set({ transcriptUrl: lookup.url, updatedAt: new Date() })
+            .where(eq(meetings.id, meetingId));
+
+          console.info("meeting_transcript_download_completed", {
+            meetingId,
+            bytes: body.length,
+            refreshedUrl: true,
+          });
+
+          return body;
         }
-
-        return response.text();
       });
 
       const parsedTranscript = parseTranscript(transcriptJson);
@@ -631,7 +715,7 @@ export const meetingsProcessing = inngest.createFunction(
           .update(meetings)
           .set({
             transcript: JSON.stringify(transcriptWithSpeakers),
-            transcriptUrl: event.data.transcriptUrl ?? meeting.transcriptUrl,
+            transcriptUrl: transcriptUrl ?? meeting.transcriptUrl,
             updatedAt: new Date(),
           })
           .where(eq(meetings.id, meetingId));
@@ -666,9 +750,20 @@ export const meetingsProcessing = inngest.createFunction(
         )
         .join("\n");
 
+      console.info("meeting_ai_analysis_started", {
+        meetingId,
+        transcriptItems: transcriptWithSpeakers.length,
+        transcriptChars: transcriptText.length,
+      });
+
       const analysis = await step.run("generate-ai-insights", async () =>
         generateAnalysis(transcriptText),
       );
+
+      console.info("meeting_ai_analysis_completed", {
+        meetingId,
+        sentiment: analysis.sentiment,
+      });
 
       const updatedMeeting = await step.run("save-summary", async () => {
         const [updated] = await db
@@ -695,17 +790,35 @@ export const meetingsProcessing = inngest.createFunction(
         return updated;
       });
 
-      await step.run("create-notification", async () => {
-        if (updatedMeeting?.userId) {
-          await db.insert(notifications).values({
-            userId: updatedMeeting.userId,
-            type: "summary_ready",
-            title: "Meeting Summary Ready",
-            message: `The AI summary, decisions, and action items for "${updatedMeeting.name}" are ready to view.`,
-            meetingId: updatedMeeting.id,
-          });
-        }
+      console.info("meeting_processing_completed", {
+        meetingId,
+        status: updatedMeeting?.status,
       });
+
+      await step.run("create-notification", async () => {
+  if (!updatedMeeting?.userId) {
+    return { sent: false, reason: "missing-user" };
+  }
+
+  try {
+    await db.insert(notifications).values({
+      userId: updatedMeeting.userId,
+      type: "summary_ready",
+      title: "Meeting Summary Ready",
+      message: `The AI summary, decisions, and action items for "${updatedMeeting.name}" are ready to view.`,
+      meetingId: updatedMeeting.id,
+    });
+
+    return { sent: true };
+  } catch (error) {
+    console.error(
+      "[NOTIFICATION] Failed to create summary notification",
+      error,
+    );
+
+    return { sent: false, reason: "notification-failed" };
+  }
+});
 
       await step.run("send-summary-email", async () => {
         if (!updatedMeeting?.userId || updatedMeeting.summaryEmailSentAt) {
@@ -763,6 +876,8 @@ export const meetingsProcessing = inngest.createFunction(
       const message =
         error instanceof Error ? error.message : "Unknown processing error";
 
+      console.error("meeting_processing_failed", { meetingId, message });
+
       await step.run("mark-failed", async () => {
         const [meeting] = await db
           .select({ userId: meetings.userId, name: meetings.name })
@@ -791,6 +906,125 @@ export const meetingsProcessing = inngest.createFunction(
 
       throw error;
     }
+  },
+);
+
+/**
+ * Safety net for the cases the event-driven path cannot cover: an `inngest.send`
+ * failure, a lost webhook, or a deployment where the Inngest app was briefly
+ * unsynced. Any meeting left in `processing` for longer than the processing
+ * function's own bounded wait is either re-triggered (transcript exists) or
+ * marked failed with a clear, user-visible reason. This prevents an endless
+ * "Summary will appear soon" state.
+ */
+const STALE_PROCESSING_MS = 45 * 60 * 1000;
+const RECONCILIATION_BATCH_SIZE = 20;
+
+export const meetingsProcessingReconciliation = inngest.createFunction(
+  {
+    id: "meetings-processing-reconciliation",
+    retries: 1,
+    concurrency: { limit: 1 },
+  },
+  { cron: "*/10 * * * *" },
+  async ({ step }) => {
+    const result = await step.run("reconcile-stuck-processing", async () => {
+      if (!isStreamConfigured()) {
+        console.error("meetings_processing_reconciliation_unavailable", {
+          reason: "stream-not-configured",
+        });
+        return { retriggered: [], failed: [], skipped: true };
+      }
+
+      const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS);
+      const stale = await db
+        .select({
+          id: meetings.id,
+          userId: meetings.userId,
+          name: meetings.name,
+          transcript: meetings.transcript,
+          transcriptUrl: meetings.transcriptUrl,
+        })
+        .from(meetings)
+        .where(
+          and(
+            eq(meetings.status, "processing"),
+            isNull(meetings.processedAt),
+            lt(meetings.updatedAt, staleBefore),
+          ),
+        )
+        .limit(RECONCILIATION_BATCH_SIZE);
+
+      const retriggered: string[] = [];
+      const failed: string[] = [];
+
+      for (const meeting of stale) {
+        let transcriptUrl = meeting.transcriptUrl;
+
+        if (!meeting.transcript?.trim() && !transcriptUrl) {
+          const lookup = await lookupTranscriptForMeeting(meeting.id);
+
+          if (lookup.status === "error") {
+            // Transient Stream failure: leave the meeting for the next run
+            // rather than marking it failed with a misleading reason.
+            console.error("meetings_processing_reconciliation_lookup_failed", {
+              meetingId: meeting.id,
+              message: lookup.message,
+            });
+            continue;
+          }
+
+          if (lookup.status === "found") {
+            transcriptUrl = lookup.url;
+          }
+        }
+
+        if (!meeting.transcript?.trim() && !transcriptUrl) {
+          const reason =
+            "No transcript was available after the meeting ended. Check that Stream recording and transcription were enabled during the call.";
+
+          await db
+            .update(meetings)
+            .set({
+              status: "failed",
+              analysisError: reason,
+              updatedAt: new Date(),
+            })
+            .where(eq(meetings.id, meeting.id));
+
+          await db.insert(notifications).values({
+            userId: meeting.userId,
+            type: "meeting_failed",
+            title: "Transcript Not Available",
+            message: `Apex Agent could not find a transcript for "${meeting.name}". ${reason}`,
+            meetingId: meeting.id,
+          });
+
+          failed.push(meeting.id);
+          continue;
+        }
+
+        if (transcriptUrl && transcriptUrl !== meeting.transcriptUrl) {
+          await db
+            .update(meetings)
+            .set({ transcriptUrl })
+            .where(eq(meetings.id, meeting.id));
+        }
+
+        await inngest.send({
+          id: createMeetingProcessingEventId(meeting.id, "reconcile"),
+          name: MEETING_PROCESSING_EVENT,
+          data: { meetingId: meeting.id, transcriptUrl },
+        });
+
+        retriggered.push(meeting.id);
+      }
+
+      return { retriggered, failed, skipped: false };
+    });
+
+    console.info("meetings_processing_reconciliation_complete", result);
+    return result;
   },
 );
 

@@ -11,6 +11,10 @@ import { db } from "@/db";
 import { agents, meetings, notifications } from "@/db/schema";
 import { streamVideo } from "@/lib/stream-video";
 import { inngest } from "@/inngest/client";
+import {
+  createMeetingProcessingEventId,
+  MEETING_PROCESSING_EVENT,
+} from "@/inngest/events";
 import { isOpenAIConfigured } from "@/lib/openai";
 import { eq } from "drizzle-orm";
 import { billingStore } from "@/modules/billing/server/store";
@@ -18,6 +22,39 @@ import { commitVerifiedStreamStart, extractStreamStartEvidence } from "@/modules
 
 const getMeetingIdFromCid = (callCid: string | undefined) =>
   callCid?.split(":").pop();
+
+const sendMeetingProcessingEvent = async ({
+  meetingId,
+  transcriptUrl,
+  reason,
+}: {
+  meetingId: string;
+  transcriptUrl?: string | null;
+  reason: string;
+}) => {
+  try {
+    await inngest.send({
+      id: createMeetingProcessingEventId(meetingId, reason),
+      name: MEETING_PROCESSING_EVENT,
+      data: { meetingId, transcriptUrl: transcriptUrl ?? null },
+    });
+
+    console.info("meeting_processing_event_sent", {
+      meetingId,
+      reason,
+      hasTranscriptUrl: Boolean(transcriptUrl),
+    });
+  } catch (error) {
+    console.error("meeting_processing_event_send_failed", {
+      meetingId,
+      reason,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    // Let the webhook fail so Stream retries delivery instead of dropping the
+    // only signal that the meeting needs processing.
+    throw error;
+  }
+};
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get("x-signature");
@@ -205,13 +242,16 @@ export async function POST(req: NextRequest) {
           updatedAt: new Date(),
         })
         .where(eq(meetings.id, meetingId));
+    }
 
-      if (meeting.transcriptUrl) {
-        await inngest.send({
-          name: "meetings/processing",
-          data: { meetingId, transcriptUrl: meeting.transcriptUrl },
-        });
-      }
+    // Do not wait for the transcript URL here: Stream finalises transcription
+    // asynchronously after the call ends. The processing function resolves it.
+    if (["active", "processing"].includes(meeting.status)) {
+      await sendMeetingProcessingEvent({
+        meetingId,
+        transcriptUrl: meeting.transcriptUrl,
+        reason: "session-ended",
+      });
     }
 
     return NextResponse.json({ status: "ok" });
@@ -235,7 +275,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "ignored" });
     }
 
-    if (meeting.status === "cancelled") {
+    if (meeting.status === "cancelled" || meeting.status === "completed") {
       return NextResponse.json({ status: "ignored" });
     }
 
@@ -247,11 +287,15 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(meetings.id, meetingId));
 
-    // If the call is still active, wait for call.session_ended to trigger analysis.
+    console.info("stream_transcription_ready", { meetingId });
+
+    // If the call is still active, wait for call.session_ended to trigger
+    // analysis. Otherwise trigger now with the freshly delivered URL.
     if (meeting.status !== "active") {
-      await inngest.send({
-        name: "meetings/processing",
-        data: { meetingId, transcriptUrl: event.call_transcription.url },
+      await sendMeetingProcessingEvent({
+        meetingId,
+        transcriptUrl: event.call_transcription.url,
+        reason: "transcription-ready",
       });
     }
 

@@ -8,7 +8,7 @@ import { ChevronRight, ClockIcon, UsersIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { GeneratedAvatar } from "@/components/generated-avatar";
 import { useMeetingsFilter } from "@/modules/meetings/hooks/use-meetings-filter";
-import { MeetingGetMany } from "../../types";
+import { MeetingGetMany, MeetingStatus } from "../../types";
 import { formatMeetingWindow, getDisplayStatus } from "../../utils";
 
 type MeetingCardData = MeetingGetMany[number];
@@ -116,9 +116,20 @@ export const MeetingView = () => {
   const trpc = useTRPC();
   const [filters] = useMeetingsFilter();
   const { data } = useSuspenseQuery(
-    trpc.meetings.getMany.queryOptions({
-      ...filters,
-    }),
+    trpc.meetings.getMany.queryOptions(
+      {
+        ...filters,
+      },
+      {
+        // Keep meeting cards in sync while the AI summary is being generated.
+        refetchInterval: (query) =>
+          query.state.data?.items?.some(
+            (meeting) => meeting.status === MeetingStatus.PROCESSING,
+          )
+            ? 5000
+            : false,
+      },
+    ),
   );
 
   return (

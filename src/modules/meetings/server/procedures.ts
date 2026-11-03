@@ -60,7 +60,12 @@ import {
 import { meetingsInsertSchema, meetingsUpdateSchema } from "../schemas";
 import { MeetingStatus } from "../types";
 import { getMeetingEnd, parseScheduledAt } from "../utils";
-import { streamVideo } from "@/lib/stream-video";
+import { isStreamConfigured, streamVideo } from "@/lib/stream-video";
+import {
+  createMeetingProcessingEventId,
+  MEETING_PROCESSING_EVENT,
+} from "@/inngest/events";
+import { lookupStreamTranscriptUrl } from "./transcript-resolution";
 import { GeneratedAvatarUri } from "@/lib/avatar";
 import { getOpenAIClient, isOpenAIConfigured, OPENAI_MODEL } from "@/lib/openai";
 import { enforcePublicGuestRateLimit } from "@/lib/public-rate-limit";
@@ -1008,7 +1013,8 @@ export const meetingsRouter = createTRPCRouter({
         )
         .catch(() => undefined);
 
-      // Check if Stream has completed transcriptions ready
+      // Check if Stream has completed transcriptions ready. This is a best-effort
+      // optimisation only; the processing worker can resolve it later.
       try {
         const call = streamVideo.video.call("default", meeting.id);
         const transcriptions = await call.listTranscriptions();
@@ -1026,19 +1032,32 @@ export const meetingsRouter = createTRPCRouter({
         // Stream listTranscriptions best-effort
       }
 
-      // If Stream already delivered the transcript while the call was active,
-      // transcription_ready intentionally deferred processing until the call
-      // ended. Trigger it now so manually-ended meetings do not stay stuck in
-      // "processing".
-      if (updatedMeeting.transcriptUrl || updatedMeeting.transcript) {
+      // Always trigger processing when a meeting ends. Stream finalises
+      // transcription asynchronously, so the transcript URL is usually absent
+      // at this exact moment; the worker polls Stream with a bounded retry.
+      try {
         const { inngest } = await import("@/inngest/client");
         await inngest.send({
-          id: `meeting-ended-${updatedMeeting.id}-${Date.now()}`,
-          name: "meetings/processing",
+          id: createMeetingProcessingEventId(updatedMeeting.id, "meeting-ended"),
+          name: MEETING_PROCESSING_EVENT,
           data: {
             meetingId: updatedMeeting.id,
-            transcriptUrl: updatedMeeting.transcriptUrl,
+            transcriptUrl: updatedMeeting.transcriptUrl ?? null,
           },
+        });
+
+        console.info("meeting_processing_event_sent", {
+          meetingId: updatedMeeting.id,
+          reason: "meeting-ended",
+          hasTranscriptUrl: Boolean(updatedMeeting.transcriptUrl),
+        });
+      } catch (error) {
+        // The meeting is already ended; failing the mutation would confuse the
+        // host. The reconciliation cron retries stuck processing meetings.
+        console.error("meeting_processing_event_send_failed", {
+          meetingId: updatedMeeting.id,
+          reason: "meeting-ended",
+          message: error instanceof Error ? error.message : "Unknown error",
         });
       }
 
@@ -1337,18 +1356,43 @@ export const meetingsRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND", message: "Meeting not found" });
       }
 
-      if (!meeting.transcriptUrl && !meeting.transcript) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "No transcript is available yet. Wait for Stream to deliver the transcription, or verify the call was recorded.",
-        });
-      }
-
       if (!isOpenAIConfigured()) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: "OPENAI_API_KEY is not configured on the server.",
+        });
+      }
+
+      let transcriptUrl = meeting.transcriptUrl;
+
+      // Recover meetings whose transcript was produced by Stream but whose URL
+      // never reached the database (for example, a missed webhook).
+      if (!transcriptUrl && !meeting.transcript?.trim() && isStreamConfigured()) {
+        const call = streamVideo.video.call("default", meeting.id);
+        const lookup = await lookupStreamTranscriptUrl(() =>
+          call.listTranscriptions(),
+        );
+
+        if (lookup.status === "found") {
+          transcriptUrl = lookup.url;
+          await db
+            .update(meetings)
+            .set({ transcriptUrl: lookup.url, updatedAt: new Date() })
+            .where(eq(meetings.id, meeting.id));
+        } else if (lookup.status === "error") {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "Could not reach Stream to check for a transcript. Please try again shortly.",
+          });
+        }
+      }
+
+      if (!transcriptUrl && !meeting.transcript?.trim()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "No transcript is available yet. Wait a few minutes for Stream to finish transcribing, then retry. If this continues, verify that recording and transcription were enabled during the call.",
         });
       }
 
@@ -1363,11 +1407,11 @@ export const meetingsRouter = createTRPCRouter({
 
       const { inngest } = await import("@/inngest/client");
       await inngest.send({
-        id: `meeting-retry-${meeting.id}-${Date.now()}`,
-        name: "meetings/processing",
+        id: createMeetingProcessingEventId(meeting.id, "retry"),
+        name: MEETING_PROCESSING_EVENT,
         data: {
           meetingId: meeting.id,
-          transcriptUrl: meeting.transcriptUrl,
+          transcriptUrl,
         },
       });
 
