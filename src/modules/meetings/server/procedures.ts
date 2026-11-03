@@ -228,7 +228,27 @@ const ensureStreamCall = async (input: {
   agent: { id: string; name: string };
 }) => {
   try {
+    // 1. Ensure both host and agent exist in Stream first.
+    await streamVideo.upsertUsers([
+      {
+        id: input.userId,
+        name: "Meeting Host",
+        role: "user",
+      },
+      {
+        id: input.agent.id,
+        name: input.agent.name,
+        role: "user",
+        image: GeneratedAvatarUri({
+          seed: input.agent.name,
+          variant: "botttsNeutral",
+        }),
+      },
+    ]);
+
+    // 2. Create or get the Stream call.
     const call = streamVideo.video.call("default", input.meetingId);
+
     await call.getOrCreate({
       data: {
         created_by_id: input.userId,
@@ -250,30 +270,22 @@ const ensureStreamCall = async (input: {
       },
     });
 
-    // Membership is scoped to this call. No role name is assigned; Stream's
-    // configured call-type defaults remain authoritative.
+    // 3. Add host and agent after their Stream users exist.
     await call.updateCallMembers(
       callMemberUpdates(input.userId, input.agent.id),
     );
 
-    await streamVideo.upsertUsers([
-      {
-        id: input.agent.id,
-        name: input.agent.name,
-        role: "user",
-        image: GeneratedAvatarUri({
-          seed: input.agent.name,
-          variant: "botttsNeutral",
-        }),
-      },
-    ]);
-
     return true;
   } catch (error) {
-    console.error("[STREAM] Failed to create call for meeting", input.meetingId, error);
+    console.error(
+      "[STREAM] Failed to create call for meeting",
+      input.meetingId,
+      error,
+    );
     return false;
   }
 };
+
 
 const generateHostStreamToken = createHostTokenOperation({
   getOwnedMeeting: async (meetingId, userId) => {
