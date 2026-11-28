@@ -31,13 +31,7 @@ const Page = async ({ searchParams }: PageProps) => {
 
   const queryClient = getQueryClient();
   void queryClient.prefetchQuery(
-    trpc.meetings.getMany.queryOptions({
-      search: params.search || undefined,
-      status: params.status || undefined,
-      agentId: params.agentId || undefined,
-      page: params.page,
-      pageSize: params.pageSize
-    })
+    trpc.meetings.getMany.queryOptions(params)
   );
 
   return (

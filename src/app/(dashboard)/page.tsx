@@ -14,7 +14,7 @@ const page=async()=> {
     redirect("/sign-in")
   }
   return (
-    <HomeView/>
+    <HomeView userName={session.user.name} />
   )
 }
 

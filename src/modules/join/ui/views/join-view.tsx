@@ -79,9 +79,9 @@ const MeetingSummary = ({ meeting }: { meeting: MeetingGetInvite["meeting"] }) =
       <span className="inline-flex items-center gap-1.5">
         <VideoIcon className="size-4" /> AI agent: {meeting.agentName}
       </span>
-      {meeting.participants.length > 0 && (
+      {meeting.participantCount > 0 && (
         <span className="inline-flex items-center gap-1.5">
-          <UsersIcon className="size-4" /> {meeting.participants.length} invited
+          <UsersIcon className="size-4" /> {meeting.participantCount} invited
         </span>
       )}
     </div>
@@ -104,7 +104,7 @@ export const JoinView = ({ meetingId }: Props) => {
   const [passcode, setPasscode] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [passcodeError, setPasscodeError] = useState<string | null>(null);
-  const [pendingName, setPendingName] = useState<string | null>(null);
+  const [pendingGuest, setPendingGuest] = useState<{ displayName: string; passcode: string } | null>(null);
   const [identity, setIdentity] = useState<GuestJoinResult | null>(null);
   const autoJoinStarted = useRef(false);
 
@@ -132,7 +132,8 @@ export const JoinView = ({ meetingId }: Props) => {
   const joinAsGuest = async (name: string, enteredPasscode?: string) => {
     if (!token) return;
 
-    setPendingName(name);
+    const guest = { displayName: name, passcode: enteredPasscode ?? passcode.trim() };
+    setPendingGuest(guest);
 
     // Enter the waiting room without creating a guest record or Stream token
     // until the meeting is actually joinable.
@@ -145,8 +146,7 @@ export const JoinView = ({ meetingId }: Props) => {
       const result = await guestJoin.mutateAsync({
         meetingId,
         token,
-        displayName: name,
-        passcode: enteredPasscode ?? passcode.trim() ?? undefined,
+        ...guest,
       });
       setIdentity(result);
       setStage("lobby");
@@ -163,22 +163,24 @@ export const JoinView = ({ meetingId }: Props) => {
   // While waiting, poll the invitation and join automatically as soon as the
   // meeting opens. This is the waiting-room hand-off.
   useEffect(() => {
-    if (stage !== "waiting" || !pendingName || !token) return;
+    if (stage !== "waiting" || !pendingGuest || !token) return;
     if (meeting?.state !== "joinable" || autoJoinStarted.current) return;
 
     autoJoinStarted.current = true;
     void guestJoin
-      .mutateAsync({ meetingId, token, displayName: pendingName })
+      .mutateAsync({ meetingId, token, ...pendingGuest })
       .then((result) => {
         setIdentity(result);
         setStage("lobby");
       })
-      .catch(() => undefined)
+      .catch((error: { data?: { code?: string } }) => {
+        if (error.data?.code === "UNAUTHORIZED") setStage("name");
+      })
       .finally(() => {
         autoJoinStarted.current = false;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, pendingName, token, meeting?.state, meetingId]);
+  }, [stage, pendingGuest, token, meeting?.state, meetingId]);
 
   if (!token) {
     return (
@@ -420,7 +422,6 @@ export const JoinView = ({ meetingId }: Props) => {
               }
 
               if (session) {
-                setPendingName(session.user.name);
                 void joinAsGuest(session.user.name, passcode.trim());
                 return;
               }
@@ -433,7 +434,6 @@ export const JoinView = ({ meetingId }: Props) => {
 
               setNameError(null);
               setPasscodeError(null);
-              setPendingName(name);
               void joinAsGuest(name, passcode.trim());
             }}
           >

@@ -1,4 +1,4 @@
-import { Github, Linkedin, Code, Server, Palette } from "lucide-react";
+import { Github, Linkedin, Code, Server, Palette, Cloud } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 
@@ -46,6 +46,21 @@ const developers: Developer[] = [
     icon: Server,
   },
   {
+    name: "Vinay Kumar",
+    role: "DevOps & Cloud Deployment Engineer",
+    about:
+      "Responsible for managing deployment workflows, cloud configuration, application hosting, and ensuring the platform runs smoothly and reliably.",
+    contributions: [
+      "Managed application deployment and hosting configuration",
+      "Worked on CI/CD workflows and deployment optimization",
+      "Configured environment variables and application settings",
+      "Assisted with testing, debugging, and deployment issues",
+      "Improved application reliability and deployment processes",
+    ],
+    photo: "/dev4.jpg",
+    icon: Cloud,
+  },
+  {
     name: "Swati Saini",
     role: "Frontend Developer & UI/UX Designer",
     about:
@@ -65,6 +80,7 @@ const developers: Developer[] = [
 const roleColors = [
   "border-l-green-500",
   "border-l-blue-500",
+  "border-l-teal-500",
   "border-l-purple-500",
 ];
 
@@ -75,7 +91,7 @@ function DeveloperCard({ developer, index }: { developer: Developer; index: numb
     <div
       className={`group relative overflow-hidden rounded-2xl bg-white border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 hover:-translate-y-[1px] ${roleColors[index]}`}
     >
-      <div className="p-8">
+      <div className="p-6 sm:p-8">
         <div className="flex flex-col items-center text-center mb-6">
           <div className="relative mb-4">
             <div className="w-28 h-28 rounded-full border-2 border-gray-200 overflow-hidden shadow-sm">
@@ -84,6 +100,8 @@ function DeveloperCard({ developer, index }: { developer: Developer; index: numb
                 width={112}
                 height={112}
                 alt={developer.name}
+                loading="eager"
+                unoptimized
                 className="object-cover w-full h-full"
               />
             </div>
@@ -95,7 +113,7 @@ function DeveloperCard({ developer, index }: { developer: Developer; index: numb
           <p className="text-sm font-medium text-green-600 mt-1">{developer.role}</p>
         </div>
 
-        <p className="text-sm text-gray-600 leading-relaxed mb-6">{developer.about}</p>
+        <p className="mb-6 text-sm leading-relaxed text-gray-600 md:min-h-[4lh] lg:min-h-[3lh]">{developer.about}</p>
 
         <div>
           <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
@@ -159,7 +177,7 @@ export default function AboutDevelopersPage() {
         </div>
 
         {/* Developer Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-20">
+        <div className="mx-auto mb-20 grid max-w-md grid-cols-1 gap-6 md:max-w-4xl md:auto-rows-fr md:grid-cols-2">
           {developers.map((developer, index) => (
             <DeveloperCard key={developer.name} developer={developer} index={index} />
           ))}

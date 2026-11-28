@@ -26,6 +26,7 @@ type BillingSummary = {
   } | null;
   billingAccountAvailable: boolean;
   manageBillingAvailable: boolean;
+  planChangesAvailable: boolean;
 };
 
 const dateLabel = (value: string | null | undefined) =>
@@ -34,6 +35,7 @@ const dateLabel = (value: string | null | undefined) =>
 function UpgradePageContent() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const searchParams = useSearchParams();
@@ -41,12 +43,14 @@ function UpgradePageContent() {
 
   const refreshSummary = useCallback(async () => {
     setSummaryLoading(true);
+    setSummaryError(false);
     try {
       const response = await fetch("/api/billing/summary", { cache: "no-store" });
       if (!response.ok) throw new Error("Billing status is temporarily unavailable.");
       setSummary(await response.json() as BillingSummary);
     } catch {
-      setMessage("Billing status is temporarily unavailable. Refresh to check again.");
+      setSummary(null);
+      setSummaryError(true);
     } finally {
       setSummaryLoading(false);
     }
@@ -102,8 +106,10 @@ function UpgradePageContent() {
   };
 
   const planLabel = summary?.entitlement.plan === "legacy" ? "Grandfathered access" :
-    summary?.entitlement.plan === "unresolved" ? "Status not yet available" :
-      `${summary?.entitlement.plan ?? "starter"} plan`;
+    !summary || summary.entitlement.plan === "unresolved" ? "Status unavailable" :
+      `${summary.entitlement.plan} plan`;
+
+  const canChangePlan = !summaryLoading && summary?.planChangesAvailable;
 
   return (
     <div className="max-w-6xl w-full flex flex-col items-center gap-10">
@@ -132,12 +138,15 @@ function UpgradePageContent() {
           <CardDescription>{summaryLoading ? "Checking subscription status…" : planLabel}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-gray-600">
+          {summaryError && <p role="alert">Billing status is temporarily unavailable. Refresh to check again.</p>}
           {summary?.subscription && <p>Subscription status: {summary.subscription.status.replaceAll("_", " ")}</p>}
           {summary?.subscription?.trialEnd && <p>Trial ends: {dateLabel(summary.subscription.trialEnd)}</p>}
           {summary?.subscription?.graceUntil && <p>Payment grace ends: {dateLabel(summary.subscription.graceUntil)}</p>}
           {summary?.subscription?.currentPeriodEnd && <p>{summary.subscription.cancelAtPeriodEnd ? "Access ends" : "Renews"}: {dateLabel(summary.subscription.currentPeriodEnd)}</p>}
           {summary?.subscription?.pendingPlanKey && <p>Plan change pending confirmation: {summary.subscription.pendingPlanKey}</p>}
           {summary?.entitlement.status === "unresolved" && <p>Billing account setup is not complete. Your current application access remains unchanged.</p>}
+          {summary && !summary.manageBillingAvailable && <p>Billing management is currently unavailable for this account.</p>}
+          {summary && !summary.planChangesAvailable && <p>Plan changes are currently unavailable.</p>}
         </CardContent>
         <CardFooter className="gap-3">
           <Button variant="outline" onClick={() => void refreshSummary()} disabled={summaryLoading}>Refresh status</Button>
@@ -183,7 +192,7 @@ function UpgradePageContent() {
             </ul>
           </CardContent>
           <CardFooter>
-            <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white" onClick={() => void onPlanAction("pro")} disabled={loading !== null || summary?.entitlement.plan === "pro"}>
+            <Button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white" onClick={() => void onPlanAction("pro")} disabled={!canChangePlan || loading !== null || summary?.entitlement.plan === "pro"}>
               {loading === "pro" ? <LoaderIcon className="animate-spin size-4 mr-2" /> : summary?.entitlement.plan === "pro" && summary.subscription?.cancelAtPeriodEnd ? "Cancellation Scheduled" : summary?.entitlement.plan === "pro" ? "Current Plan" : "Choose Pro"}
             </Button>
           </CardFooter>
@@ -204,7 +213,7 @@ function UpgradePageContent() {
             </ul>
           </CardContent>
           <CardFooter>
-            <Button variant="outline" className="w-full border-orange-200 text-orange-600 hover:bg-orange-50" onClick={() => void onPlanAction("enterprise")} disabled={loading !== null || summary?.entitlement.plan === "enterprise"}>
+            <Button variant="outline" className="w-full border-orange-200 text-orange-600 hover:bg-orange-50" onClick={() => void onPlanAction("enterprise")} disabled={!canChangePlan || loading !== null || summary?.entitlement.plan === "enterprise"}>
               {loading === "enterprise" ? <LoaderIcon className="animate-spin size-4 mr-2" /> : summary?.entitlement.plan === "enterprise" && summary.subscription?.cancelAtPeriodEnd ? "Cancellation Scheduled" : summary?.entitlement.plan === "enterprise" ? "Current Plan" : "Choose Enterprise"}
             </Button>
           </CardFooter>

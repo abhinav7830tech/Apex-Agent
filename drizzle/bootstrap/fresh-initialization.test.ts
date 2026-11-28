@@ -63,7 +63,7 @@ const actionCode = (code: string) => {
 };
 
 describe("fresh database initialization", () => {
-  it("applies the baseline, registers 0000, and lets the standard runner apply 0001-0007", async (t) => {
+  it("applies the baseline, registers 0000, and lets the standard runner apply 0001-0008", async (t) => {
     const plan = await getPlan();
     const { client, drizzleDb } = createDatabase(t);
 
@@ -131,7 +131,7 @@ describe("fresh database initialization", () => {
            WHERE n.nspname = 'public') AS functions`,
     );
 
-    assert.deepEqual(counts[0], { tables: 21, enums: 2, functions: 15 });
+    assert.deepEqual(counts[0], { tables: 22, enums: 2, functions: 15 });
   });
 
   it("is idempotent when invoked again after bootstrap and after full migration", async (t) => {

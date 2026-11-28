@@ -20,6 +20,7 @@ export const NewAgentDialog=({
         <ResponsiveDialog
         title="New Agent"
         description="Create a new agents"
+        scrollable
         open={open}
         onOpenChange={onOpenChange}
         >

@@ -1,3 +1,4 @@
+import type { InvitationDelivery } from "@/modules/meetings/invitation-result";
 import {
   pgTable,
   text,
@@ -160,6 +161,7 @@ export const meetings = pgTable(
     endsAt: timestamp("ends_at"),
     timezone: text("timezone").notNull().default("UTC"),
     participants: text("participants").array().default([]),
+    creationCompletedAt: timestamp("creation_completed_at"),
     streamCallId: text("stream_call_id"),
     startedAt: timestamp("started_at"),
     endedAt: timestamp("ended_at"),
@@ -218,6 +220,18 @@ export const meetingInvites = pgTable(
     index("meeting_invites_meeting_id_idx").on(table.meetingId),
     index("meeting_invites_expires_at_idx").on(table.expiresAt),
   ],
+);
+
+export const meetingEmailInvitations = pgTable(
+  "meeting_email_invitations",
+  {
+    requestKey: text("request_key").primaryKey(),
+    meetingId: text("meeting_id")
+      .notNull()
+      .references(() => meetings.id, { onDelete: "cascade" }),
+    result: jsonb("result").$type<InvitationDelivery>().notNull(),
+  },
+  (table) => [index("meeting_email_invitations_meeting_id_idx").on(table.meetingId)],
 );
 
 export const meetingGuests = pgTable(

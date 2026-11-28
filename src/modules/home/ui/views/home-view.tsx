@@ -1,43 +1,20 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { LoaderIcon, Users, Calendar, Activity, Clock } from "lucide-react";
-import { authClient } from "@/lib/auth-client";
+import { Users, Calendar, Activity, Clock } from "lucide-react";
 import { useTRPC } from "@/trpc/client";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
-export function HomeView() {
-  const { data: session, isPending } = authClient.useSession();
+export function HomeView({ userName }: { userName: string }) {
   const trpc = useTRPC();
 
-  const { data: agentsCount } = useQuery({
-    ...trpc.agents.getCount.queryOptions(),
-    enabled: !!session?.user,
-  });
-
-  const { data: meetingStats } = useQuery({
-    ...trpc.meetings.getStats.queryOptions(),
-    enabled: !!session?.user,
-  });
-
-  const { data: analyticsData } = useQuery({
-    ...trpc.meetings.getAnalytics.queryOptions(),
-    enabled: !!session?.user,
-  });
-
-  if (isPending || !analyticsData || !meetingStats) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#eefbf3] via-[#e8f5ef] to-[#dff7ea]">
-        <div className="flex flex-col items-center gap-4">
-          <LoaderIcon className="size-8 animate-spin text-green-500" />
-          <p className="text-[#5a7a6a] text-sm font-medium animate-pulse">Loading your workspace...</p>
-        </div>
-      </div>
-    );
-  }
-
-  const userName = session?.user?.name || "there";
-  const displayedAgentsCount = agentsCount || 0;
+  const agents = useQuery(trpc.agents.getCount.queryOptions());
+  const stats = useQuery(trpc.meetings.getStats.queryOptions());
+  const analytics = useQuery(trpc.meetings.getAnalytics.queryOptions());
+  const { data: agentsCount } = agents;
+  const { data: meetingStats } = stats;
+  const { data: analyticsData } = analytics;
+  const failedQueries = [agents, stats, analytics].filter((query) => query.isError);
 
   const formatDuration = (seconds: number) => {
     const minutes = Math.floor(seconds / 60);
@@ -45,7 +22,7 @@ export function HomeView() {
     return `${minutes}m`;
   };
 
-  const chartData = Object.entries(analyticsData.talkTimePerUser).map(([name, time]) => ({
+  const chartData = Object.entries(analyticsData?.talkTimePerUser ?? {}).map(([name, time]) => ({
     name,
     talkTime: Math.floor((time as number) / 60)
   }));
@@ -66,12 +43,27 @@ export function HomeView() {
              </div>
            </div>
            <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-[#1a3d2e]">
-              Welcome back, <span className="text-transparent bg-clip-text bg-gradient-to-r from-green-600 via-emerald-500 to-blue-500">{userName}</span>
+              Welcome back, <span className="text-transparent bg-clip-text bg-gradient-to-r from-green-600 via-emerald-500 to-blue-500">{userName || "there"}</span>
            </h1>
            <p className="text-[#5a7a6a] text-lg max-w-2xl">
              Your intelligent command center. Monitor your meetings and AI agent performance in real-time.
            </p>
         </header>
+
+        {failedQueries.length > 0 && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-green-200 bg-white px-4 py-3 text-sm text-[#3d5a48]">
+            <span>Some workspace data could not be loaded.</span>
+            <button
+              type="button"
+              className="font-semibold text-green-700 underline"
+              onClick={() => {
+                void Promise.all(failedQueries.map((query) => query.refetch()));
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Stats Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -83,7 +75,7 @@ export function HomeView() {
                  <Users className="size-4" />
               </div>
             </div>
-            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{displayedAgentsCount}</p>
+            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{agentsCount ?? "—"}</p>
             <p className="text-xs text-[#7a9a8a]">Active AI Assistants</p>
           </div>
 
@@ -94,7 +86,7 @@ export function HomeView() {
                  <Activity className="size-4" />
               </div>
             </div>
-            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{meetingStats.totalConfigured}</p>
+            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{meetingStats?.totalConfigured ?? "—"}</p>
             <p className="text-xs text-[#7a9a8a]">All time sessions</p>
           </div>
 
@@ -105,7 +97,7 @@ export function HomeView() {
                  <Clock className="size-4" />
               </div>
             </div>
-            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{formatDuration(analyticsData.averageDuration)}</p>
+            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{analyticsData ? formatDuration(analyticsData.averageDuration) : "—"}</p>
             <p className="text-xs text-[#7a9a8a]">Per summarized meeting</p>
           </div>
 
@@ -116,7 +108,7 @@ export function HomeView() {
                  <Calendar className="size-4" />
               </div>
             </div>
-            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{meetingStats.upcomingCount}</p>
+            <p className="text-3xl font-bold text-[#1a3d2e] mb-1">{meetingStats?.upcomingCount ?? "—"}</p>
             <p className="text-xs text-[#7a9a8a]">Scheduled sessions</p>
           </div>
 
@@ -156,7 +148,13 @@ export function HomeView() {
                  <div className="rounded-full bg-green-100 p-4">
                     <Activity className="size-8 text-green-300" />
                  </div>
-                 <p className="text-sm font-medium">No meeting data recorded yet.</p>
+                 <p className="text-sm font-medium">
+                   {analytics.isError && !analyticsData
+                     ? "Meeting insights could not be loaded."
+                     : analytics.isPending
+                       ? "Loading meeting insights…"
+                       : "No meeting data recorded yet."}
+                 </p>
               </div>
             )}
           </div>

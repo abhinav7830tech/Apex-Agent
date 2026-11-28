@@ -31,7 +31,7 @@ export type GuestMeeting = {
   durationMinutes: number;
   hostName: string;
   agentName: string;
-  participants: string[];
+  participantCount: number;
   requireAccount: boolean;
   requiresPasscode: boolean;
   state: GuestAccessState;
@@ -98,7 +98,7 @@ export const toGuestMeeting = ({
   durationMinutes: meeting.durationMinutes,
   hostName,
   agentName,
-  participants: meeting.participants ?? [],
+  participantCount: meeting.participants?.length ?? 0,
   requireAccount: invite.requireAccount,
   requiresPasscode: Boolean(meeting.passcodeHash),
   state,

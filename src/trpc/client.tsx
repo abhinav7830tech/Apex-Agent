@@ -21,19 +21,7 @@ function getQueryClient() {
   if (!browserQueryClient) browserQueryClient = makeQueryClient();
   return browserQueryClient;
 }
-function getUrl() {
-  const base = (() => {
-    if (typeof window !== 'undefined') return '';
-       return process.env.NEXT_PUBLIC_APP_URL
-  })();
-  return `${base}/api/trpc`;
-}
-export function TRPCReactProvider(
-  props: Readonly<{
-    children: React.ReactNode;
-    cookie?: string;
-  }>,
-) {
+export function TRPCReactProvider({ children }: Readonly<{ children: React.ReactNode }>) {
   // NOTE: Avoid useState when initializing the query client if you don't
   //       have a suspense boundary between this and the code that may
   //       suspend because React will throw away the client on the initial
@@ -43,15 +31,13 @@ export function TRPCReactProvider(
     createTRPCClient<AppRouter>({
       links: [
         httpBatchLink({
-          // transformer: superjson, <-- if you use a data transformer
-          url: getUrl(),
-          headers: () => {
-            if (typeof window === 'undefined' && props.cookie) {
-              return { cookie: props.cookie };
+          url: '/api/trpc',
+          fetch: (url, options) => {
+            if (typeof window === 'undefined') {
+              throw new Error('Prefetch tRPC queries with the server caller before rendering.');
             }
-            return {};
+            return fetch(url, { ...options, credentials: 'same-origin' });
           },
-          fetch: (url, options) => fetch(url, { ...options, credentials: 'include' }),
         }),
       ],
     }),
@@ -59,7 +45,7 @@ export function TRPCReactProvider(
   return (
     <QueryClientProvider client={queryClient}>
       <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
-        {props.children}
+        {children}
       </TRPCProvider>
     </QueryClientProvider>
   );

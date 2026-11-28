@@ -19,6 +19,7 @@ export const NewMeeetingDialog = ({
     <ResponsiveDialog
       title="New Meeting"
       description="Create a new meetings"
+      scrollable
       open={open}
       onOpenChange={onOpenChange}
     >

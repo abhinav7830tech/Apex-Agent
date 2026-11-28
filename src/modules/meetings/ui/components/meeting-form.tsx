@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -25,6 +25,7 @@ import { GeneratedAvatar } from "@/components/generated-avatar";
 import { NewAgentDialog } from "@/modules/agents/ui/components/new-agent-dialog";
 import { meetingsInsertSchema } from "../../schemas";
 import { MeetingGetOne } from "../../types";
+import { showMeetingCreationFeedback } from "../invitation-feedback";
 import {
   toDatetimeLocalValue,
   toZonedDatetimeLocalValue,
@@ -65,6 +66,7 @@ export const MeetingForm = ({
     initialValues?.participants?.join(", ") ?? "",
   );
 
+  const createRequest = useRef<{ payload: string; id: string } | null>(null);
   const timezone = initialValues?.timezone ?? getBrowserTimezone();
 
   const agents = useQuery(
@@ -88,9 +90,10 @@ export const MeetingForm = ({
   const createMeeting = useMutation(
     trpc.meetings.create.mutationOptions({
       onSuccess: async (data) => {
+        createRequest.current = null;
+        showMeetingCreationFeedback(data.invitationDelivery);
         await invalidateMeetings(data.id);
         onSuccess?.(data.id);
-        toast.success("Meeting scheduled successfully.");
       },
       onError: (error) => {
         toast.error(error.message);
@@ -168,7 +171,11 @@ export const MeetingForm = ({
     if (isEdit) {
       updateMeeting.mutate({ ...payload, id: initialValues.id });
     } else {
-      createMeeting.mutate(payload);
+      const requestPayload = JSON.stringify({ ...payload, scheduledAt: values.isInstant ? undefined : payload.scheduledAt });
+      if (createRequest.current?.payload !== requestPayload) {
+        createRequest.current = { payload: requestPayload, id: crypto.randomUUID() };
+      }
+      createMeeting.mutate({ ...payload, requestId: createRequest.current.id });
     }
   };
 

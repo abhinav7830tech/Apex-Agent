@@ -44,6 +44,7 @@ import {
   buildMeetingInviteUrl,
   getRequiredAppBaseUrl,
 } from "@/lib/app-url";
+import { parseProductionOrigin } from "@/lib/application-origin";
 import {
   assertGuestTokenOwner,
   createGuestIdentity,
@@ -76,6 +77,14 @@ import {
 } from "./stream-token-operations";
 import { callMemberUpdates } from "./stream-call-members";
 import { createMeetingOperation } from "./create-meeting-operation";
+import { emailMeetingInvitations } from "./email-invitations";
+import {
+  assertMeetingAcceptsInvitations,
+  getMeetingInviteExpiry,
+  meetingIdForRequest,
+  passcodeForRequest,
+  requireInvitableMeeting,
+} from "./invitation-details";
 
 const CLOSED_STATUSES = [
   MeetingStatus.COMPLETED,
@@ -152,6 +161,72 @@ const createNotification = async (input: {
   meetingId: string;
 }) => {
   await db.insert(notifications).values(input);
+};
+
+const loadOwnedMeeting = async (meetingId: string, userId: string) => {
+  const [meeting] = await db.select().from(meetings)
+    .where(and(eq(meetings.id, meetingId), eq(meetings.userId, userId)));
+  return meeting;
+};
+
+const loadInvitableMeeting = async (meetingId: string, userId: string) =>
+  requireInvitableMeeting(await loadOwnedMeeting(meetingId, userId), userId);
+
+const getOrCreateGuestInvite = async (
+  meeting: typeof meetings.$inferSelect,
+  now: Date,
+  options: { forceNew?: boolean; requireAccount?: boolean } = {},
+) => {
+  const expiresAt = getMeetingInviteExpiry(meeting, now);
+  if (!options.forceNew) {
+    const [existing] = await db.select().from(meetingInvites)
+      .where(and(
+        eq(meetingInvites.meetingId, meeting.id),
+        isNull(meetingInvites.revokedAt),
+        gt(meetingInvites.expiresAt, now),
+      ))
+      .orderBy(desc(meetingInvites.createdAt))
+      .limit(1);
+
+    if (existing) {
+      const shouldExtend = expiresAt.getTime() > now.getTime() + 60 * 60 * 1000 && existing.expiresAt < expiresAt;
+      if (shouldExtend || (options.requireAccount !== undefined && options.requireAccount !== existing.requireAccount)) {
+        const [updated] = await db.update(meetingInvites)
+          .set({
+            ...(shouldExtend ? { expiresAt } : {}),
+            requireAccount: options.requireAccount,
+          })
+          .where(and(eq(meetingInvites.id, existing.id), isNull(meetingInvites.revokedAt)))
+          .returning();
+        if (!updated) {
+          throw new TRPCError({ code: "CONFLICT", message: "The guest link changed. Please try again." });
+        }
+        return updated;
+      }
+      return existing;
+    }
+  }
+
+  const [lastInvite] = await db.select({ requireAccount: meetingInvites.requireAccount })
+    .from(meetingInvites)
+    .where(eq(meetingInvites.meetingId, meeting.id))
+    .orderBy(desc(meetingInvites.createdAt))
+    .limit(1);
+  const [invite] = await db.insert(meetingInvites).values({
+    meetingId: meeting.id,
+    createdBy: meeting.userId,
+    requireAccount: options.requireAccount ?? lastInvite?.requireAccount ?? false,
+    expiresAt,
+  }).returning();
+  return invite;
+};
+
+const getInvitationEmailUrl = async (meeting: typeof meetings.$inferSelect) => {
+  assertMeetingAcceptsInvitations(meeting.status);
+  const baseUrl = parseProductionOrigin(getRequiredAppBaseUrl());
+  if (!baseUrl) throw new AppUrlConfigurationError();
+  const invite = await getOrCreateGuestInvite(meeting, new Date());
+  return buildMeetingInviteUrl({ meetingId: meeting.id, token: invite.id, baseUrl });
 };
 
 const guestAccessOperations = createGuestAccessOperations({
@@ -362,36 +437,7 @@ export const meetingsRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const [meeting] = await db
-        .select()
-        .from(meetings)
-        .where(
-          and(
-            eq(meetings.id, input.meetingId),
-            eq(meetings.userId, ctx.auth.user.id),
-          ),
-        );
-
-      if (!meeting) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Meeting not found or you do not have access to it.",
-        });
-      }
-
-      if (
-        [
-          MeetingStatus.CANCELLED,
-          MeetingStatus.COMPLETED,
-          MeetingStatus.FAILED,
-          MeetingStatus.PROCESSING,
-        ].includes(meeting.status as MeetingStatus)
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This meeting has ended, so new invitations cannot be created.",
-        });
-      }
+      const meeting = await loadInvitableMeeting(input.meetingId, ctx.auth.user.id);
 
       let baseUrl: string;
       try {
@@ -431,84 +477,12 @@ export const meetingsRouter = createTRPCRouter({
           activeInvites.map(({ id }) => id),
           meeting.id,
         );
-      } else {
-        const [existing] = await db
-          .select()
-          .from(meetingInvites)
-          .where(
-            and(
-              eq(meetingInvites.meetingId, meeting.id),
-              isNull(meetingInvites.revokedAt),
-              gt(meetingInvites.expiresAt, now),
-            ),
-          )
-          .orderBy(desc(meetingInvites.createdAt))
-          .limit(1);
-
-        if (existing) {
-          if (
-            input.requireAccount !== undefined &&
-            existing.requireAccount !== input.requireAccount
-          ) {
-            const [updated] = await db
-              .update(meetingInvites)
-              .set({ requireAccount: input.requireAccount })
-              .where(eq(meetingInvites.id, existing.id))
-              .returning();
-
-            return {
-              token: updated.id,
-              url: buildMeetingInviteUrl({
-                meetingId: meeting.id,
-                token: updated.id,
-                baseUrl,
-              }),
-              expiresAt: updated.expiresAt,
-              requireAccount: updated.requireAccount,
-            };
-          }
-
-          return {
-            token: existing.id,
-            url: buildMeetingInviteUrl({
-              meetingId: meeting.id,
-              token: existing.id,
-              baseUrl,
-            }),
-            expiresAt: existing.expiresAt,
-            requireAccount: existing.requireAccount,
-          };
-        }
       }
 
-      const meetingEndsAt =
-        meeting.endsAt ??
-        (meeting.scheduledAt
-          ? new Date(
-              meeting.scheduledAt.getTime() +
-                meeting.durationMinutes * 60 * 1000,
-            )
-          : null);
-      const defaultExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const meetingExpiry = meetingEndsAt
-        ? new Date(meetingEndsAt.getTime() + 24 * 60 * 60 * 1000)
-        : defaultExpiry;
-      const expiresAt = new Date(
-        Math.max(
-          now.getTime() + 60 * 60 * 1000,
-          Math.min(defaultExpiry.getTime(), meetingExpiry.getTime()),
-        ),
-      );
-
-      const [invite] = await db
-        .insert(meetingInvites)
-        .values({
-          meetingId: meeting.id,
-          createdBy: ctx.auth.user.id,
-          requireAccount: input.requireAccount ?? false,
-          expiresAt,
-        })
-        .returning();
+      const invite = await getOrCreateGuestInvite(meeting, now, {
+        forceNew: input.regenerate,
+        requireAccount: input.requireAccount,
+      });
 
       return {
         token: invite.id,
@@ -520,6 +494,22 @@ export const meetingsRouter = createTRPCRouter({
         expiresAt: invite.expiresAt,
         requireAccount: invite.requireAccount,
       };
+    }),
+
+  resendInvitations: protectedProcedure
+    .input(z.object({
+      meetingId: z.string().min(1),
+      requestId: z.string().uuid(),
+      passcode: z.string().trim().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const meeting = await loadInvitableMeeting(input.meetingId, ctx.auth.user.id);
+      return emailMeetingInvitations({
+        meeting,
+        requestKey: `meeting-email/${meeting.id}/resend/${input.requestId}`,
+        passcode: input.passcode,
+        getInviteUrl: () => getInvitationEmailUrl(meeting),
+      });
     }),
 
   revokeInvite: protectedProcedure
@@ -695,118 +685,103 @@ export const meetingsRouter = createTRPCRouter({
     }),
 
   create: protectedProcedure
-    .input(meetingsInsertSchema)
+    .input(meetingsInsertSchema.extend({ requestId: z.string().uuid().optional() }))
     .mutation(async ({ input, ctx }) => {
-      const isInstant = Boolean(input.isInstant);
-      let scheduledAt: Date;
-      let endsAt: Date;
-      let initialStatus = MeetingStatus.SCHEDULED;
+      const { requestId, isInstant, passcode, ...meetingValues } = input;
+      const userId = ctx.auth.user.id;
+      const meetingId = requestId ? meetingIdForRequest(userId, requestId) : nanoid();
+      const existing = requestId ? await loadOwnedMeeting(meetingId, userId) : undefined;
+      const rawPasscode = passcode || (requestId
+        ? passcodeForRequest(meetingId, (await auth.$context).secret)
+        : generatePasscode());
 
-      if (isInstant) {
-        scheduledAt = new Date();
-        endsAt = getMeetingEnd(scheduledAt, input.durationMinutes);
-        initialStatus = MeetingStatus.ACTIVE;
-      } else {
-        const parsed = parseScheduledAt(input.scheduledAt ?? "");
-
-        if (!parsed) {
+      let scheduledAt: Date | null | undefined = existing?.scheduledAt;
+      let endsAt: Date | null | undefined = existing?.endsAt;
+      if (!existing) {
+        scheduledAt = isInstant ? new Date() : parseScheduledAt(input.scheduledAt ?? "");
+        if (!scheduledAt) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Enter a valid meeting date and time.",
           });
         }
 
-        if (parsed.getTime() < Date.now() - 2 * 60 * 1000) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "A meeting cannot be scheduled in the past.",
-          });
-        }
-
-        scheduledAt = parsed;
         endsAt = getMeetingEnd(scheduledAt, input.durationMinutes);
-        await assertNoOverlap({
-          userId: ctx.auth.user.id,
+        if (!isInstant) {
+          if (scheduledAt.getTime() < Date.now() - 2 * 60 * 1000) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "A meeting cannot be scheduled in the past.",
+            });
+          }
+          await assertNoOverlap({ userId, scheduledAt, endsAt, excludeMeetingId: meetingId });
+        }
+      }
+
+      const agent = (!existing || !existing.creationCompletedAt)
+        ? await ensureAgentOwnership(userId, existing?.agentId ?? input.agentId)
+        : null;
+      let meeting = existing;
+      if (!meeting) {
+        const [created] = await db.insert(meetings).values({
+          ...meetingValues,
+          id: meetingId,
           scheduledAt,
           endsAt,
+          passcodeHash: hashPasscode(rawPasscode),
+          streamCallId: meetingId,
+          status: isInstant ? MeetingStatus.ACTIVE : MeetingStatus.SCHEDULED,
+          startedAt: isInstant ? scheduledAt : null,
+          userId,
+        }).onConflictDoNothing({ target: meetings.id }).returning();
+        meeting = created ?? await loadOwnedMeeting(meetingId, userId);
+        if (!meeting) {
+          throw new TRPCError({ code: "CONFLICT", message: "Please retry meeting creation." });
+        }
+      }
+
+      const savedMeeting = meeting;
+      if (!savedMeeting.creationCompletedAt) {
+        const meetingAgent = agent?.id === savedMeeting.agentId
+          ? agent
+          : await ensureAgentOwnership(userId, savedMeeting.agentId);
+        await createMeetingOperation({
+          persistMeeting: async () => savedMeeting,
+          ensureStreamCall: (created) => ensureStreamCall({
+            meetingId: created.id,
+            meetingName: created.name,
+            userId,
+            agent: meetingAgent,
+          }),
+          sendSuccessNotification: async (created) => {
+            const instantMeeting = Boolean(created.startedAt);
+            await db.insert(notifications).values({
+              id: `meeting-created/${created.id}`,
+              userId,
+              type: "meeting_reminder",
+              title: instantMeeting ? "Instant Meeting Started" : "Meeting Scheduled",
+              message: instantMeeting
+                ? `Your meeting "${created.name}" is live now.`
+                : `Your meeting "${created.name}" has been scheduled successfully.`,
+              meetingId: created.id,
+            }).onConflictDoNothing({ target: notifications.id });
+            await db.update(meetings).set({ creationCompletedAt: new Date() })
+              .where(and(eq(meetings.id, created.id), isNull(meetings.creationCompletedAt)));
+          },
         });
       }
 
-      const agent = await ensureAgentOwnership(ctx.auth.user.id, input.agentId);
-      const meetingId = nanoid();
-
-      const rawPasscode = input.passcode?.trim() || generatePasscode();
-      const passcodeHash = hashPasscode(rawPasscode);
-
-      const createdMeetingResult = await createMeetingOperation({
-        persistMeeting: async () => {
-          const { isInstant: _, passcode: __, ...meetingValues } = input;
-          const [createdMeeting] = await db
-            .insert(meetings)
-            .values({
-              ...meetingValues,
-              id: meetingId,
-              scheduledAt,
-              endsAt,
-              passcodeHash,
-              streamCallId: meetingId,
-              status: initialStatus,
-              startedAt: isInstant ? scheduledAt : null,
-              userId: ctx.auth.user.id,
-            })
-            .returning();
-          return createdMeeting;
-        },
-        ensureStreamCall: (createdMeeting) =>
-          ensureStreamCall({
-            meetingId: createdMeeting.id,
-            meetingName: createdMeeting.name,
-            userId: ctx.auth.user.id,
-            agent,
-          }),
-        sendSuccessNotification: (createdMeeting) =>
-          createNotification({
-            userId: createdMeeting.userId,
-            type: "meeting_reminder",
-            title: isInstant ? "Instant Meeting Started" : "Meeting Scheduled",
-            message: isInstant
-              ? `Your meeting "${createdMeeting.name}" is live now.`
-              : `Your meeting "${createdMeeting.name}" has been scheduled successfully.`,
-            meetingId: createdMeeting.id,
-          }),
-      });
-
-      // Automatically pre-create an active invitation link for seamless sharing
-      let inviteUrl = "";
-      let inviteToken = "";
-      try {
-        const baseUrl = getRequiredAppBaseUrl();
-        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        const [invite] = await db
-          .insert(meetingInvites)
-          .values({
-            meetingId: createdMeetingResult.id,
-            createdBy: ctx.auth.user.id,
-            expiresAt,
-          })
-          .returning();
-        if (invite) {
-          inviteToken = invite.id;
-          inviteUrl = buildMeetingInviteUrl({
-            meetingId: createdMeetingResult.id,
-            token: invite.id,
-            baseUrl,
-          });
-        }
-      } catch (error) {
-        console.warn("[MEETING_CREATE] Could not generate invite link at creation:", error);
-      }
-
-      return {
-        ...createdMeetingResult,
+      const invitationDelivery = await emailMeetingInvitations({
+        meeting: savedMeeting,
+        requestKey: `meeting-email/${savedMeeting.id}/creation`,
         passcode: rawPasscode,
-        inviteUrl,
-        inviteToken,
+        getInviteUrl: () => getInvitationEmailUrl(savedMeeting),
+      });
+      const { passcodeHash, creationCompletedAt: _creationCompletedAt, ...result } = savedMeeting;
+      return {
+        ...result,
+        passcode: verifyPasscode(rawPasscode, passcodeHash) ? rawPasscode : undefined,
+        invitationDelivery,
       };
     }),
 

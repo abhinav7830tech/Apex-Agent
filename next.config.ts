@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: process.cwd(),
   // Enable React strict mode
   reactStrictMode: true,
 
@@ -29,4 +31,14 @@ const nextConfig: NextConfig = {
 
 };
 
-export default nextConfig;
+export default function config(phase: string): NextConfig {
+  if (phase !== PHASE_DEVELOPMENT_SERVER) return nextConfig;
+
+  // Next sets PORT to the port it actually bound, including automatic retries.
+  const port = process.env.PORT;
+  const distDir = port && port !== "3000" && /^\d+$/.test(port)
+    ? `.next-dev-${port}`
+    : ".next-dev";
+
+  return { ...nextConfig, distDir };
+}

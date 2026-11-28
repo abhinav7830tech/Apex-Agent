@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   CheckIcon,
   CopyIcon,
   KeyRoundIcon,
   LinkIcon,
+  MailIcon,
   LoaderIcon,
   MessageCircleIcon,
   RefreshCwIcon,
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { showInvitationFeedback } from "../invitation-feedback";
 
 interface Props {
   meetingId: string;
@@ -51,6 +53,18 @@ export const InviteGuestsDialog = ({
   const [copiedPasscode, setCopiedPasscode] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const [passcode, setPasscode] = useState(initialPasscode ?? "");
+  const [resendPasscode, setResendPasscode] = useState("");
+  const resendRequest = useRef<string | null>(null);
+  const resendInvitations = useMutation(trpc.meetings.resendInvitations.mutationOptions({
+    onSuccess: (result) => {
+      resendRequest.current = null;
+      showInvitationFeedback(result);
+      if (!result.accepted && !result.failed && !result.unconfirmed) {
+        toast.info("Add participant email addresses to the meeting before sending invitations.");
+      }
+    },
+    onError: (error) => toast.error(error.message),
+  }));
 
   const createInvite = useMutation(
     trpc.meetings.createInvite.mutationOptions({
@@ -86,6 +100,7 @@ export const InviteGuestsDialog = ({
       setCopiedId(false);
       setCopiedPasscode(false);
       setCopiedAll(false);
+      setResendPasscode("");
       return;
     }
     if (createInvite.data) {
@@ -281,7 +296,7 @@ export const InviteGuestsDialog = ({
                       type="button"
                       className="text-[11px] text-emerald-600 hover:underline"
                       onClick={() => newPasscodeMutation.mutate({ meetingId })}
-                      disabled={newPasscodeMutation.isPending}
+                      disabled={newPasscodeMutation.isPending || resendInvitations.isPending}
                     >
                       {newPasscodeMutation.isPending ? "Generating..." : "Reset"}
                     </button>
@@ -345,6 +360,48 @@ export const InviteGuestsDialog = ({
                 >
                   <Share2Icon className="size-4 mr-2" />
                   Share
+                </Button>
+              </div>
+
+              <div className="space-y-2 rounded-lg border p-3">
+                {(!passcode || resendInvitations.data?.reason === "passcode-unavailable") && (
+                  <>
+                    <Label htmlFor="invite-email-passcode">Current meeting passcode (if required)</Label>
+                    <Input
+                      id="invite-email-passcode"
+                      type="password"
+                      value={resendPasscode}
+                      onChange={(event) => {
+                        resendRequest.current = null;
+                        setResendPasscode(event.target.value);
+                      }}
+                      autoComplete="off"
+                      disabled={resendInvitations.isPending}
+                    />
+                  </>
+                )}
+                {Boolean(resendInvitations.data?.unconfirmed) && (
+                  <p className="text-sm text-muted-foreground">
+                    {resendInvitations.data?.testMode
+                      ? "Resend acceptance could not be confirmed. Retrying may send another email to the development test recipient."
+                      : "Resend acceptance could not be confirmed. Sending again may email the same participants."}
+                  </p>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={resendInvitations.isPending || newPasscodeMutation.isPending}
+                  onClick={() => {
+                    resendRequest.current ??= crypto.randomUUID();
+                    resendInvitations.mutate({
+                      meetingId,
+                      requestId: resendRequest.current,
+                      passcode: resendPasscode.trim() || passcode || undefined,
+                    });
+                  }}
+                >
+                  <MailIcon className="mr-2 size-4" />
+                  {resendInvitations.isPending ? "Sending…" : "Resend invitations"}
                 </Button>
               </div>
 

@@ -1,7 +1,7 @@
 import { GeneratedAvatar } from "@/components/generated-avatar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Drawer, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
+import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,6 +13,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { authClient } from "@/lib/auth-client";
 import { ChevronDownIcon, CreditCardIcon, LogOutIcon, SettingsIcon } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 export const DashboardUserButton = () => {
@@ -60,9 +61,16 @@ export const DashboardUserButton = () => {
             <DrawerDescription className="text-[#5a7a6a]">{data.user.email}</DrawerDescription>
           </DrawerHeader>
           <DrawerFooter>
-            <Button variant="outline" className="border-green-200 bg-white text-[#1a3d2e] hover:bg-green-50">
-              <CreditCardIcon className="size-4 mr-2" /> Billing
-            </Button>
+            <DrawerClose asChild>
+              <Button asChild variant="outline" className="border-green-200 bg-white text-[#1a3d2e] hover:bg-green-50">
+                <Link href="/settings"><SettingsIcon className="size-4 mr-2" /> Settings</Link>
+              </Button>
+            </DrawerClose>
+            <DrawerClose asChild>
+              <Button asChild variant="outline" className="border-green-200 bg-white text-[#1a3d2e] hover:bg-green-50">
+                <Link href="/upgrade"><CreditCardIcon className="size-4 mr-2" /> Billing</Link>
+              </Button>
+            </DrawerClose>
             <Button variant="outline" className="border-green-200 bg-white text-[#1a3d2e] hover:bg-green-50" onClick={onLogout}>
               <LogOutIcon className="size-4 mr-2" /> Logout
             </Button>
@@ -96,11 +104,11 @@ export const DashboardUserButton = () => {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-green-100" />
-        <DropdownMenuItem className="text-[#3d5a48] focus:bg-green-50 focus:text-[#1a3d2e]">
-          <SettingsIcon className="size-4 mr-2" /> Settings
+        <DropdownMenuItem asChild className="text-[#3d5a48] focus:bg-green-50 focus:text-[#1a3d2e]">
+          <Link href="/settings"><SettingsIcon className="size-4 mr-2" /> Settings</Link>
         </DropdownMenuItem>
-        <DropdownMenuItem className="text-[#3d5a48] focus:bg-green-50 focus:text-[#1a3d2e]">
-          <CreditCardIcon className="size-4 mr-2" /> Billing
+        <DropdownMenuItem asChild className="text-[#3d5a48] focus:bg-green-50 focus:text-[#1a3d2e]">
+          <Link href="/upgrade"><CreditCardIcon className="size-4 mr-2" /> Billing</Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator className="bg-green-100" />
         <DropdownMenuItem onClick={onLogout} className="text-red-500 focus:bg-red-50 focus:text-red-600">

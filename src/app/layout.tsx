@@ -4,8 +4,8 @@ import { TRPCReactProvider } from "@/trpc/client";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { NuqsAdapter } from "nuqs/adapters/next";
-import { headers } from "next/headers";
 import { FloatingHomeButton } from "@/components/floating-home-button";
+import { connection } from "next/server";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,12 +30,11 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const headerz = await headers();
-  const cookie = headerz.get("cookie");
+  await connection();
 
   return (
     <NuqsAdapter>
-      <TRPCReactProvider cookie={cookie ?? undefined}>
+      <TRPCReactProvider>
         <html lang="en">
           <body
             className={`${geistSans.variable} ${geistMono.variable} antialiased`}
